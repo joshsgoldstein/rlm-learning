@@ -352,6 +352,7 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
 @dataclass
 class SemanticJudgeResult:
     backend: str
+    call_count: int
     semantic_score: float
     topic_overlap_score: float
     factuality_groundedness_score: float
@@ -409,6 +410,7 @@ def semantic_similarity_llm(
             semantic_reason = f"Vector similarity failed: {type(e).__name__}: {e}"
         return SemanticJudgeResult(
             backend="vector",
+            call_count=0,
             semantic_score=max(0.0, min(1.0, semantic_score)),
             topic_overlap_score=0.0,
             factuality_groundedness_score=0.0,
@@ -435,6 +437,7 @@ def semantic_similarity_llm(
     )
     judge_cfg = _judge_config(cfg)
     raw = call_llm(prompt, judge_cfg, usage_accum=usage).strip()
+    llm_calls = 1
     retries = max(0, int(os.getenv("JUDGE_JSON_RETRIES", "1")))
 
     semantic_score = 0.0
@@ -469,6 +472,7 @@ def semantic_similarity_llm(
                 judge_cfg,
                 usage_accum=usage,
             ).strip()
+            llm_calls += 1
 
     if obj is not None:
         semantic_score = float(obj["semantic_score"])
@@ -503,6 +507,7 @@ def semantic_similarity_llm(
         winner = "tie"
     return SemanticJudgeResult(
         backend="llm",
+        call_count=llm_calls,
         semantic_score=semantic_score,
         topic_overlap_score=topic_score,
         factuality_groundedness_score=factuality_score,

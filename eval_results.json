@@ -1,0 +1,75 @@
+{
+  "summary": {
+    "questions": 1,
+    "pass_cited_docs": 1,
+    "pass_token_efficiency": 1,
+    "avg_token_savings_pct": 81.22163803772526,
+    "avg_overlap_ratio": 0.061845131612573476,
+    "avg_tfidf_similarity": 0.4894560101592012,
+    "avg_evidence_doc_overlap_count": 8.0,
+    "avg_evidence_doc_baseline_only_count": 0.0,
+    "avg_evidence_doc_rlm_only_count": 78.0,
+    "avg_evidence_doc_jaccard": 0.09302325581395349,
+    "avg_semantic_similarity": 0.916376609993609,
+    "semantic_backend_counts": {
+      "llm": 0,
+      "vector": 1,
+      "disabled": 0
+    },
+    "avg_topic_overlap": 0.0,
+    "avg_factuality_groundedness": 0.0,
+    "avg_evidence_sufficiency": 0.0,
+    "avg_judge_confidence": 0.0,
+    "hallucination_risk_counts": {
+      "low": 0,
+      "med": 1,
+      "high": 0
+    },
+    "winner_counts": {
+      "baseline": 0,
+      "rlm": 0,
+      "tie": 1
+    },
+    "semantic_judge_tokens": 0,
+    "semantic_judge_cost_usd": 0.0
+  },
+  "rows": [
+    {
+      "question": "Where do Deloitte and KPMG disagree on governance readiness and what evidence does each give?",
+      "traditional_tokens": 113929,
+      "rlm_tokens": 21394,
+      "token_savings_pct": 81.22163803772526,
+      "traditional_cost_usd": 0.01725045,
+      "rlm_cost_usd": 0.0044951999999999995,
+      "traditional_truncated": true,
+      "traditional_docs_included": 8,
+      "traditional_total_docs": 86,
+      "rlm_cited_docs": 4,
+      "traditional_cited_docs": 3,
+      "baseline_evidence_docs": 8,
+      "rlm_evidence_docs": 86,
+      "evidence_doc_overlap_count": 8,
+      "evidence_doc_baseline_only_count": 0,
+      "evidence_doc_rlm_only_count": 78,
+      "evidence_doc_jaccard": 0.09302325581395349,
+      "overlap_ratio": 0.061845131612573476,
+      "tfidf_similarity_score": 0.4894560101592012,
+      "semantic_backend": "vector",
+      "semantic_similarity_score": 0.916376609993609,
+      "topic_overlap_score": 0.0,
+      "factuality_groundedness_score": 0.0,
+      "evidence_sufficiency_score": 0.0,
+      "hallucination_risk_flag": "med",
+      "judge_winner": "tie",
+      "judge_confidence": 0.0,
+      "judge_traditional_has_citations": true,
+      "judge_rlm_has_citations": true,
+      "semantic_similarity_reason": "Cosine similarity from embedding vectors.",
+      "topic_overlap_reason": "Not computed in vector backend.",
+      "semantic_judge_tokens": 0,
+      "semantic_judge_cost_usd": 0.0,
+      "pass_min_cited_docs": true,
+      "pass_token_efficiency": true
+    }
+  ]
+}

@@ -1,7 +1,15 @@
-Classify this user message as either RESEARCH or CHAT.
+Classify this user message as RESEARCH or CHAT.
 
-RESEARCH = needs to look up information from documents (e.g. "what are the trends", "compare the reports", "find details about X")
-CHAT = conversational follow-up that can be answered from the conversation history alone (e.g. "summarize that", "thanks", "explain more", "what did you say")
+RESEARCH = the question requires searching or reading from the loaded document corpus (e.g. "what are the trends across reports", "compare the findings", "find details about X in the documents").
+CHAT = the question does NOT require the document corpus. This includes:
+  - Conversational follow-ups answerable from chat history (e.g. "summarize that", "thanks", "explain more").
+  - General knowledge questions unrelated to the documents (e.g. "how do I take a screenshot", "what is Python", "what year is it").
+  - Meta questions about the tool itself (e.g. "what commands are available", "how does this work").
+
+If in doubt, ask: "Would searching the PDF corpus help answer this?" If no, classify as CHAT.
+
+Document corpus ({{DOC_COUNT}} documents):
+{{DOC_SAMPLE}}
 
 Recent conversation:
 {{RECENT}}

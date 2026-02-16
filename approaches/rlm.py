@@ -20,21 +20,12 @@ from rlm_core import (
     _render_prompt,
     call_llm,
 )
+from .router import classify_route
 
 
-def is_conversational(question: str, history: List[ChatMessage], cfg: Config) -> bool:
-    """Let the LLM decide if this question needs document research or is just conversational."""
-    if len(history) < 2:
-        return False
-
-    recent = "\n".join(f"{m.role}: {m.content[:200]}" for m in history[-4:])
-    prompt = _render_prompt(
-        CONVERSATIONAL_ROUTER_PROMPT_PATH,
-        RECENT=recent,
-        QUESTION=question,
-    )
-    result = call_llm(prompt, cfg, usage_accum=None)  # don't count routing tokens
-    return "CHAT" in result.upper()
+def is_conversational(question: str, history: List[ChatMessage], cfg: Config, doc_ids: List[str] | None = None) -> bool:
+    """Let the LLM decide if this question needs document research or is just conversational/general."""
+    return classify_route(question=question, history=history, cfg=cfg, doc_ids=doc_ids) == "CHAT"
 
 
 def answer_direct(
@@ -89,8 +80,8 @@ def answer_question(
     cfg: Config,
     on_event: Optional[Callable] = None,
 ) -> AnswerResult:
-    """Smart router: conversational questions get a direct answer, research questions get the RLM sandbox."""
-    if history and is_conversational(question, history, cfg):
+    """Smart router: conversational/general questions get a direct answer, research questions get the RLM sandbox."""
+    if is_conversational(question, history, cfg, doc_ids=list(doc_map.keys())):
         return answer_direct(question, history, cfg, on_event)
 
     _on_event = on_event or (lambda *a: None)
