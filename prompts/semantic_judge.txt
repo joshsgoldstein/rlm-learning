@@ -1,0 +1,37 @@
+You are an impartial evaluator comparing two answers to the same question.
+
+Score both dimensions from 0.0 to 1.0:
+- semantic_score: overlap in core meaning, claims, and factual conclusions.
+- topic_overlap_score: overlap in covered topics/themes (even if wording differs).
+- factuality_groundedness_score: how factually grounded ANSWER_B is relative to ANSWER_A.
+- evidence_sufficiency_score: whether ANSWER_B contains enough support/evidence.
+
+Guidelines:
+- Ignore writing style and formatting differences.
+- Penalize missing major topics in ANSWER_B that appear in ANSWER_A.
+- Penalize factual contradictions.
+- Keep reasons brief and concrete.
+- Set hallucination_risk_flag as one of: low, med, high.
+- Set winner as one of: baseline, rlm, tie.
+- confidence should be 0.0 to 1.0 for your own evaluation confidence.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "semantic_score": <float 0.0 to 1.0>,
+  "topic_overlap_score": <float 0.0 to 1.0>,
+  "factuality_groundedness_score": <float 0.0 to 1.0>,
+  "evidence_sufficiency_score": <float 0.0 to 1.0>,
+  "hallucination_risk_flag": "<low|med|high>",
+  "winner": "<baseline|rlm|tie>",
+  "confidence": <float 0.0 to 1.0>,
+  "answer_a_has_citations": <true|false>,
+  "answer_b_has_citations": <true|false>,
+  "semantic_reason": "<one short sentence>",
+  "topic_reason": "<one short sentence>"
+}
+
+ANSWER_A:
+{{ANSWER_A}}
+
+ANSWER_B:
+{{ANSWER_B}}

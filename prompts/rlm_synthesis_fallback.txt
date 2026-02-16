@@ -1,0 +1,8 @@
+Based on the following evidence gathered from exploring multiple documents, answer this question:
+
+QUESTION: {{QUESTION}}
+
+EVIDENCE:
+{{EVIDENCE}}
+
+Provide a concise answer (3-8 sentences) citing sources where possible. If the evidence is insufficient, say what you found and what's missing.

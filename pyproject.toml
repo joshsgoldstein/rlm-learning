@@ -1,0 +1,18 @@
+[project]
+name = "rlm-technique"
+version = "0.1.0"
+description = "Educational implementation of Recursive Language Models (arXiv:2512.24601) — LLM writes code to explore documents in a REPL sandbox"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pypdf>=6.7.0",
+    "cryptography>=46.0.5",
+    "requests>=2.32.5",
+    "weaviate-client>=4.17.0",
+    "openai>=1.0.0",
+    "anthropic>=0.40.0",
+    "python-dotenv>=1.2.1",
+    "textual>=7.5.0",
+    "rich>=14.3.2",
+    "weaviate-client>=4.19.2",
+]

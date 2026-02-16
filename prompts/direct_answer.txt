@@ -1,0 +1,9 @@
+You are a helpful assistant. Answer the user's question based on the conversation history.
+Format your answer as clean markdown.
+
+CONVERSATION:
+{{CHAT_CTX}}
+
+USER: {{QUESTION}}
+
+ASSISTANT:

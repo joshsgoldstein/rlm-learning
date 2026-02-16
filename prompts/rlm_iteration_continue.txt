@@ -1,0 +1,14 @@
+{{SYSTEM_PROMPT}}
+
+DOCUMENTS AVAILABLE:
+{{DOC_COUNT}} documents total. Use docs keys + search/peek to explore.
+
+USER QUESTION:
+{{QUESTION}}
+
+PREVIOUS CODE AND OUTPUT:
+{{RECENT_TRACE}}
+
+{{FORCE_MSG}}
+
+```python

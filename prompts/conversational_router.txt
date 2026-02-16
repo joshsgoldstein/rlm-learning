@@ -1,0 +1,11 @@
+Classify this user message as either RESEARCH or CHAT.
+
+RESEARCH = needs to look up information from documents (e.g. "what are the trends", "compare the reports", "find details about X")
+CHAT = conversational follow-up that can be answered from the conversation history alone (e.g. "summarize that", "thanks", "explain more", "what did you say")
+
+Recent conversation:
+{{RECENT}}
+
+New message: {{QUESTION}}
+
+Reply with exactly one word: RESEARCH or CHAT

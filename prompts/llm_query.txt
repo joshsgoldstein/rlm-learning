@@ -1,0 +1,9 @@
+Answer the question using ONLY the text below. Be concise (2-4 sentences).
+If the text doesn't contain the answer, say "Not found."
+
+TEXT:
+{{TEXT}}
+
+QUESTION: {{QUESTION}}
+
+ANSWER:

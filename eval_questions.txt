@@ -1,0 +1,15 @@
+# One question per line. Lines starting with # are ignored.
+How did Deloitte's position on enterprise AI evolve from 2025 to 2026?
+What are the key differences between build, buy, and borrow approaches for AI agents?
+What governance and risk controls are repeatedly recommended across reports?
+What capabilities separate early AI pilots from production-scale agent deployments?
+Which specific failure modes and hallucination risks are most cited, and what mitigations are proposed?
+How do the reports define AI agent ROI, and what metrics are recommended to track business value?
+What organizational operating model changes are recommended to support enterprise agent adoption?
+Where do the documents disagree on timeline and readiness for autonomous agents in production?
+What recurring recommendations are made for data quality, retrieval architecture, and grounding strategy?
+How are human-in-the-loop controls positioned across high-risk vs low-risk workflows?
+What security and compliance requirements are emphasized for regulated industries adopting agents?
+Which use cases are described as overhyped versus high-confidence near-term wins, and why?
+What implementation roadmap is implied across the corpus for a company starting from zero today?
+How are organizations selcting their model output quality metrics and KPIs 

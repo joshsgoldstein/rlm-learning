@@ -1,179 +1,209 @@
 # RLM Technique
 
-A lightweight implementation of the **Recursive Language Model (RLM)** inference paradigm, applied to grounded Q&A over a corpus of PDF documents.
+An educational implementation of **Recursive Language Models (RLMs)** — the inference paradigm from [arXiv:2512.24601](https://arxiv.org/abs/2512.24601) where the LLM writes code to explore documents in a REPL sandbox instead of stuffing everything into the context window.
+
+Includes a **TUI (Terminal UI)** that visualizes the RLM process in real-time and compares it against the traditional approach side-by-side.
 
 ## Background
 
-https://arxiv.org/abs/2512.24601
+See **[`docs/RLM_PAPER.md`](docs/RLM_PAPER.md)** for a full summary of the paper, its results, and how this repo maps to the original architecture.
+See **[`docs/TWEAKS_EXPLAINED.md`](docs/TWEAKS_EXPLAINED.md)** for a beginner-friendly explanation of practical implementation tweaks and why they were made.
 
-Based on [**Recursive Language Models**](https://arxiv.org/abs/2512.24601) (Zhang, Kraska & Khattab — MIT CSAIL, 2025). RLMs let the model drive its own research over an external environment instead of stuffing everything into the context window, scaling to 10M+ tokens without quality loss. See **[RLM_PAPER.md](RLM_PAPER.md)** for a full summary of the paper, its results, and how this repo maps to the original architecture.
+**TL;DR:** Traditional LLM apps cram all your documents into one prompt. This causes *context rot* — performance degrades as input grows. RLMs fix this by storing documents externally and letting the LLM write code to explore only what it needs.
+
+## Quick Start
+
+```bash
+# clone and install
+git clone <repo-url> && cd rlm_technique
+uv sync
+
+# create env file
+cp env.sample .env
+# then edit .env with your real API keys
+
+# drop PDFs in data/
+cp your-documents/*.pdf data/
+
+# run the TUI
+uv run python rlm_tui.py
+
+# or the plain CLI
+uv run python rlm_cli.py
+```
+
+On first run, PDFs are automatically extracted to `processed_data/` (text per page). Subsequent runs load instantly.
+
+## Evaluation Harness
+
+Run a repeatable benchmark to compare RLM vs traditional across fixed questions:
+
+```bash
+uv run python rlm_eval.py --questions-file eval_questions.txt --min-cited-docs 8
+```
+
+For a live step stream similar to the TUI inspector:
+
+```bash
+uv run python rlm_eval.py --questions-file eval_questions.txt --min-cited-docs 8 --verbose-trace
+```
+
+What it reports per question:
+- traditional tokens/cost + truncation stats
+- RLM tokens/cost
+- token savings percentage (RLM vs traditional)
+- cited-document count (RLM and traditional)
+- answer overlap ratio (surface similarity)
+- semantic similarity (LLM judge)
+- topic overlap score (LLM judge)
+- citation booleans from judge (`answer_a_has_citations`, `answer_b_has_citations`)
+
+LLM judge prompt is editable at:
+- `prompts/semantic_judge.txt`
+
+Optional judge-model overrides (separate from main answer model):
+- `JUDGE_LLM_PROVIDER`
+- `JUDGE_LLM_MODEL`
+- `JUDGE_LLM_BASE_URL`
+- `JUDGE_LLM_API_KEY`
+- `JUDGE_LLM_TEMPERATURE`
+
+To disable semantic judging:
+
+```bash
+uv run python rlm_eval.py --questions-file eval_questions.txt --no-semantic-judge
+```
+
+It saves machine-readable output to `eval_results.json` by default.
 
 ## How It Works
 
-1. **PDF ingestion** — PDFs are loaded page-by-page into an in-memory library (`build_library`).
-2. **Recursive loop** — For each user question the system enters a bounded loop (up to `RLM_MAX_STEPS` iterations):
-   - The LLM is prompted with the question, chat history, and evidence collected so far.
-   - It responds with either a `NEXT_QUERY` (search keyword/phrase) or `DONE` plus a final `ANSWER`.
-   - If a query is returned, the system runs a regex search across all document pages, retrieves the top snippet hits, and appends them as evidence.
-   - The loop repeats until the model declares `DONE` or the step budget is exhausted.
-3. **Citation** — The final answer references evidence as `[doc_id p#]` so users can verify claims.
+The LLM gets a **Python REPL sandbox** with 4 functions:
+
+| Function | What it does |
+|---|---|
+| `peek(doc_id, page)` | Read a document page — returns the text |
+| `search(query)` | Regex search across all docs — returns hits |
+| `llm_query(question, text)` | Recursive sub-LM call — ask a question about a chunk |
+| `answer(text)` | Set the final answer — ends the loop |
+
+Each iteration:
+1. The LLM writes a Python code block
+2. The code executes in the sandbox (persistent state, like Jupyter)
+3. Output feeds back to the LLM as context
+4. Repeat until `answer()` is called
+
+```
+User Question (query only — documents stay external)
+     │
+     ▼
+┌──────────────────────────┐
+│  LLM writes Python code  │◄──────────────────────────┐
+│  in the REPL sandbox     │                            │
+└──────────┬───────────────┘                            │
+           │                                            │
+     Code executes:                                     │
+     peek() / search() / llm_query() / answer()         │
+           │                                            │
+     stdout + return values                             │
+           │                                            │
+     Feed output back to LLM ───────────────────────────┘
+
+RUNTIME ENVIRONMENT (external — documents live here)
+┌──────────────────────────────┐
+│  docs = {doc_id: pages}      │  ◄── text extracted from PDFs
+│  peek(), search() read from  │      never sent to LLM directly
+│  this, not the prompt         │
+└──────────────────────────────┘
+```
+
+## The TUI
+
+```bash
+uv run python rlm_tui.py
+```
+
+Two-panel layout:
+- **Left: Chat** — clean Q&A with markdown answers, token tables, and a side-by-side comparison of RLM vs traditional
+- **Right: Inspector** — live view of the code the LLM writes, REPL output, and paper concept annotations
+
+Features:
+- 📚 **Paper concepts** — each step shows the relevant paper section explaining *why* that operation matters
+- 💡 **Cost comparison** — after each answer, shows traditional vs RLM token usage
+- 🐌 **Traditional answer** — runs the naive "all docs in one prompt" approach for comparison
+- 🚀 **RLM answer** — the agent explores documents via code, with citations
+- 📊 **Per-iteration token table** — see exactly where tokens were spent
+- 🧪 **`/eval` benchmark in-chat** — run fixed-question evaluation with live traditional + RLM traces
+- `/copy` — copies the full turn (question + answers + steps + tokens) as JSON to clipboard
+
+Keyboard shortcuts:
+| Key | Action |
+|---|---|
+| `ctrl+]` | Inspector wider |
+| `ctrl+[` | Inspector narrower |
+| `ctrl+h` | Toggle inspector on/off |
+| `ctrl+l` | Clear chat |
+| `ctrl+c` | Quit |
 
 ## Project Structure
 
 | File | Purpose |
 |---|---|
-| `rlm_core.py` | Config, PDF loading, search/snippet tools, LLM calling, the RLM loop (`answer_question`), and data classes (`ChatMessage`, `Evidence`, `AnswerResult`) |
-| `rlm_cli.py` | Interactive chat CLI with session save/load, history, and per-turn tracing |
-| `rlm_tracer.py` | Tree-structured tracing system (`TraceTree`) that records every LLM call, tool invocation, and step for debugging/analysis |
-| `pyproject.toml` | Project metadata and dependencies |
-
-## Requirements
-
-- Python ≥ 3.13
-- **One** of the following LLM backends:
-  - [Ollama](https://ollama.com) running locally (default) — e.g. `ollama pull qwen2.5:7b`
-  - An [OpenAI](https://platform.openai.com) API key
-  - An [Anthropic](https://console.anthropic.com) API key
-- A `data/` directory containing the PDF documents you want to query
-
-### Python Dependencies
-
-Managed via `pyproject.toml`:
-
-- `pypdf` — PDF text extraction
-- `requests` — HTTP calls to the Ollama API
-- `openai` — OpenAI provider support
-- `anthropic` — Anthropic provider support
-- `jupyterlab` — notebook support (optional for CLI usage)
-
-## Installation
-
-```bash
-# clone the repo
-git clone <repo-url> && cd rlm_technique
-
-# create a virtual environment & install deps
-python -m venv venv
-source venv/bin/activate
-pip install -e .
-```
+| `rlm_core.py` | Core types/config/providers + REPL sandbox (`RLMSandbox`) |
+| `approaches/rlm.py` | RLM approach implementation (router + recursive loop) |
+| `approaches/traditional.py` | Traditional baseline implementation |
+| `approaches/rag.py` | RAG baseline implementation (Weaviate retrieval + synthesis) |
+| `rlm_tui.py` | Terminal UI with chat + inspector panels, live visualization, paper annotations |
+| `rlm_cli.py` | Plain CLI (no panels, just text output) |
+| `rlm_trace.py` | Tree-structured tracing (`TraceTree`) |
+| `prompts/rlm_system.txt` | System prompt telling the LLM how to use the sandbox |
+| `scripts/legacy/process-pdfs.py` | Legacy full PDF processor with embeddings (optional, advanced use) |
+| `notebooks/build-data.ipynb` | Experimental Weaviate notebook workflow |
+| `docs/assets/` | Paper PDF and visual/reference assets |
+| `data/` | Drop your PDFs here |
+| `processed_data/` | Auto-generated text extraction (page-by-page) |
+| `.env` | API keys and config |
 
 ## Configuration
 
-All configuration is driven by environment variables with sensible defaults.
-
-### LLM Settings
+All via environment variables or `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
 | `LLM_PROVIDER` | `ollama` | `ollama`, `openai`, or `anthropic` |
-| `LLM_MODEL` | *(per-provider)* | Model name — defaults to `qwen2.5:7b` / `gpt-4o-mini` / `claude-sonnet-4-20250514` |
-| `LLM_BASE_URL` | *(per-provider)* | API base URL (auto-set per provider, override for proxies) |
-| `OPENAI_API_KEY` | — | API key when `LLM_PROVIDER=openai` |
-| `ANTHROPIC_API_KEY` | — | API key when `LLM_PROVIDER=anthropic` |
-| `LLM_TEMPERATURE` | `0.2` | Sampling temperature |
+| `LLM_MODEL` | *(per-provider)* | `qwen2.5:7b` / `gpt-4o-mini` / `claude-sonnet-4-20250514` |
+| `LLM_BASE_URL` | *(per-provider)* | API base URL |
+| `OPENAI_API_KEY` | — | OpenAI API key |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key |
+| `LLM_TEMPERATURE` | `0.3` | Sampling temperature |
+| `ENABLED_APPROACHES` | `rlm,traditional` | Ordered, comma-separated approaches to run (`rlm`, `traditional`, `rag`) |
+| `RLM_MAX_ITERATIONS` | `10` | Max REPL iterations per question |
+| `RLM_HARD_MAX_ITERATIONS` | `60` | Safety cap used when `RLM_MAX_ITERATIONS=0` (until-done mode) |
+| `RLM_SANDBOX_EXEC_TIMEOUT_S` | `5.0` | Per-step Python execution timeout in the sandbox |
+| `RLM_SANDBOX_MAX_EXEC_LINES` | `50000` | Per-step Python line budget in the sandbox |
+| `RLM_MAX_HISTORY_MESSAGES` | `8` | Chat history included in prompts |
+| `RLM_DATA_DIR` | `data` | PDF source directory |
+| `RLM_PROCESSED_DIR` | `processed_data` | Extracted text directory |
+| `RAG_WEAVIATE_MODE` | `local` | Weaviate connection mode for RAG baseline |
+| `RAG_WEAVIATE_COLLECTION` | `RLMChunk` | Weaviate collection to query |
+| `RAG_TOP_K` | `10` | Number of chunks to retrieve |
+| `RAG_RETRIEVAL_MODE` | `semantic` | Retrieval strategy: `semantic` (vector only) or `hybrid` (BM25 + vector) |
+| `RAG_HYBRID_ALPHA` | `0.7` | Hybrid blend weight toward vector search (0.0-1.0; used only in `hybrid` mode) |
+| `RAG_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model used for query vectors |
+| `RAG_AUTO_BOOTSTRAP` | `true` | If collection is missing/empty, auto-create and ingest from `processed_data` on first RAG run |
+| `RAG_INGEST_MAX_CHARS` | `1800` | Max characters per ingested chunk |
+| `RAG_INGEST_BATCH_SIZE` | `64` | Embedding batch size during bootstrap ingestion |
 
-### RLM Loop Settings
+## Why RLM > Traditional
 
-| Variable | Default | Description |
+| | Traditional | RLM |
 |---|---|---|
-| `RLM_MAX_STEPS` | `8` | Maximum search-read-decide iterations per question |
-| `RLM_MAX_HITS` | `6` | Max search hits returned per query |
-| `RLM_MAX_EVIDENCE` | `8` | Max evidence snippets retained (oldest are dropped) |
-| `RLM_SNIPPET_CHARS` | `1600` | Characters to extract per snippet |
-| `RLM_MAX_HISTORY_MESSAGES` | `8` | Chat history messages included in the prompt |
-
-### Tracing & Debug
-
-| Variable | Default | Description |
-|---|---|---|
-| `RLM_VERBOSE` | `false` | Print trace events to stdout |
-| `RLM_TRACE` | `false` | Write per-turn JSON trace files |
-| `RLM_TRACE_DIR` | `traces` | Directory for trace output files |
-
-## Usage
-
-### CLI Chat
-
-```bash
-python rlm_cli.py
-```
-
-You'll be dropped into an interactive prompt:
-
-```
-RLM Chat CLI (type /help). Loading PDFs...
-Loaded 4 documents. Ready.
-
-you> What are the key agentic coding trends for 2026?
-```
-
-### CLI Commands
-
-| Command | Description |
-|---|---|
-| `/help` | Show available commands |
-| `/docs` | List loaded document IDs |
-| `/history` | Show last 10 chat messages |
-| `/save [path]` | Save session history to JSON (default: `session.json`) |
-| `/load [path]` | Load session history from JSON (default: `session.json`) |
-| `/clear` | Clear chat history |
-| `/quit` | Exit the CLI |
-
-### Enabling Tracing
-
-```bash
-RLM_TRACE=true RLM_VERBOSE=true python rlm_cli.py
-```
-
-Each conversation turn writes a JSON trace tree to the `traces/` directory, capturing every LLM call, search, and snippet retrieval with timestamps — useful for debugging and understanding the model's research path.
-
-## Architecture
-
-Context is a **variable, not input** — the LLM never sees the full corpus. It interacts with the document environment through three tools:
-
-```
-User Question (query only — context stays external)
-     │
-     ▼
-┌──────────────────────────┐
-│  decide_next_step (LLM)  │◄─────────────────────────┐
-│  "Which tool should I    │                           │
-│   call next?"            │                           │
-└──────────┬───────────────┘                           │
-           │                                           │
-     ┌─────┼──────────┬──────────┐                     │
-     │     │          │          │                     │
-     ▼     ▼          ▼          ▼                     │
-   peek   grep     lm_call     done                   │
-   │       │          │          │                     │
-   │       │          │          ▼                     │
-   │       │          │     ANSWER ──► return          │
-   │       │          │                                │
-   │       │          ▼                                │
-   │       │     sub-LM call                           │
-   │       │     (read chunk,                          │
-   │       │      answer sub-Q)                        │
-   │       │          │                                │
-   ▼       ▼          ▼                                │
-  append to evidence ──────────────────────────────────┘
-
-RUNTIME ENVIRONMENT (external)
-┌──────────────────────────────┐
-│  context: str = ...          │  ◄── PDFs stored as variables
-│  ██████████████████████████  │      (lazy-loaded from data/)
-│  ██████████████████████████  │
-└──────────────────────────────┘
-```
-
-| Tool | Maps to paper | What it does |
-|---|---|---|
-| `peek` | `peek(context[:2000])` | Reveal structure of a document page |
-| `grep` | `grep(context, pattern)` | Search all docs for a keyword → filtered subset |
-| `lm_call` | `lm_call(sub_query, chunk)` | Recursive sub-LM call on a page chunk → sub-answer |
-| `done` | — | Enough evidence gathered → final answer |
-
-The LLM context window stays lean — it only ever contains the query, evidence summaries, and tool results. The full document text lives in the `DocumentLibrary` (runtime environment) and is only accessed through tool calls.
+| **4 docs** | Works OK — fits in context | Similar cost, better citations |
+| **50 docs** | Truncates most content, loses info | Searches + reads only relevant pages |
+| **500 docs** | Impossible — exceeds context window | Same as 50. Agent finds what it needs. |
+| **Citations** | None — it's all one blob | `[doc_id p#]` — knows exactly where each fact came from |
+| **Cost scaling** | Linear with corpus size | Logarithmic — reads only what's needed |
+| **Context rot** | Yes — quality degrades with length | No — each prompt is small and focused |
 
 ## License
 

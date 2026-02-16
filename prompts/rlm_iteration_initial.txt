@@ -1,0 +1,16 @@
+{{SYSTEM_PROMPT}}
+
+DOCUMENTS AVAILABLE:
+{{DOC_SUMMARY}}
+
+CHAT HISTORY:
+{{CHAT_CTX}}
+
+USER QUESTION:
+{{QUESTION}}
+
+Write Python code to explore the documents and answer the question.
+You have these functions: peek(doc_id, page), search(query), llm_query(question, text), answer(final_text).
+Start by exploring the documents. Call answer("your final answer") when done.
+
+```python
