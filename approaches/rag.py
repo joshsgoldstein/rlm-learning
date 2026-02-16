@@ -22,7 +22,7 @@ from rlm_core import (
 
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-RAG_PROMPT_PATH = PROMPTS_DIR / "rag_answer.txt"
+FINAL_ANSWER_PROMPT_PATH = PROMPTS_DIR / "final_answer_common.txt"
 
 
 @dataclass
@@ -520,10 +520,11 @@ def answer_rag(
     rag_context = "\n\n".join(context_blocks)
 
     prompt = _render_prompt(
-        RAG_PROMPT_PATH,
+        FINAL_ANSWER_PROMPT_PATH,
+        CONTEXT_KIND=f"RAG retrieval context (top {rag_cfg.top_k} chunks)",
         QUESTION=question,
-        TOP_K=str(rag_cfg.top_k),
-        RETRIEVED_CONTEXT=rag_context,
+        CONTEXT=rag_context,
+        CONTEXT_NOTES="Use only retrieved chunks as evidence. If retrieval is insufficient, say what is missing.",
     )
 
     _on_event("rag_stage", f"Calling LLM with {len(chunks)} retrieved chunks")

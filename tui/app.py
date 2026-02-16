@@ -26,7 +26,16 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.markdown import Markdown
 
-from rlm_core import Config, ChatMessage, TokenUsage, IterationStats, estimate_cost, enabled_approaches_from_env
+from rlm_core import (
+    Config,
+    ChatMessage,
+    TokenUsage,
+    IterationStats,
+    estimate_cost,
+    enabled_approaches_from_env,
+    list_ollama_models,
+    list_openai_models,
+)
 from rlm_docs import discover_docs, list_pdf_files, missing_processed_pdfs, preprocess_pdfs
 from rlm_eval import load_questions, run_eval, summarize
 from rlm_eval import (
@@ -50,7 +59,6 @@ from approaches.rlm import answer_direct as rlm_answer_direct
 from .constants import (
     DATA_DIR,
     PROCESSED_DIR,
-    CONCEPT_NOTES,
     INSPECTOR_SIZES as DEFAULT_INSPECTOR_SIZES,
     SLASH_COMMANDS as DEFAULT_SLASH_COMMANDS,
     INPUT_SUGGESTIONS,
@@ -98,6 +106,13 @@ class RLMApp(App):
         self.rag_ready: bool = False
         self.rag_last_error: str = ""
         self.startup_query: str = startup_query.strip()
+        self._active_inspector_source: str = "overview"
+        self._context_data: dict = {
+            "overview": {},
+            "traditional": {},
+            "rag": {},
+            "rlm": {},
+        }
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -117,17 +132,16 @@ class RLMApp(App):
                     with TabPane("Overview", id="tab-overview"):
                         yield RichLog(id="inspector-log", wrap=True, highlight=True, markup=True, auto_scroll=True)
                     if "traditional" in self.enabled_approaches:
-                        with TabPane("Traditional", id="tab-traditional"):
+                        with TabPane(get_approach("traditional").label, id="tab-traditional"):
                             yield RichLog(id="inspector-log-traditional", wrap=True, highlight=True, markup=True, auto_scroll=True)
                     if "rag" in self.enabled_approaches:
-                        with TabPane("Basic RAG", id="tab-rag"):
+                        with TabPane(get_approach("rag").label, id="tab-rag"):
                             yield RichLog(id="inspector-log-rag", wrap=True, highlight=True, markup=True, auto_scroll=True)
                     if "rlm" in self.enabled_approaches:
-                        with TabPane("RLM", id="tab-rlm"):
+                        with TabPane(get_approach("rlm").label, id="tab-rlm"):
                             yield RichLog(id="inspector-log-rlm", wrap=True, highlight=True, markup=True, auto_scroll=True)
                 with Vertical(id="bottom-info"):
-                    yield Static("", id="token-panel")
-                    yield Static("", id="concept-panel")
+                    yield Static("", id="context-view-panel")
                     yield Static("", id="docs-label")
         yield Footer()
 
@@ -145,21 +159,46 @@ class RLMApp(App):
         chat.write(Text("Initializing — see Inspector panel for details.", style="dim"))
         chat.write(Text(""))
 
-        # show concept intro
-        self.query_one("#concept-panel", Static).update(
-            Panel(
-                "[bold]RLM Concept[/]\nThe LLM writes code to explore documents stored externally.\n"
-                "It never sees the full text — only what it requests.\n"
-                "Ask a question to see it in action!",
-                border_style="yellow",
-            )
-        )
+        # initialize context view panel
+        self._refresh_context_view()
 
         inspector.write(Text("⏳ Initializing...", style="bold"))
         inspector.write(Text(""))
 
         # kick off doc loading in background so we can show progress
         self._init_docs()
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        if event.tabbed_content.id != "inspector-tabs":
+            return
+        pane_id = event.pane.id or "tab-overview"
+        source = "overview"
+        if pane_id == "tab-traditional":
+            source = "traditional"
+        elif pane_id == "tab-rag":
+            source = "rag"
+        elif pane_id == "tab-rlm":
+            source = "rlm"
+        self._active_inspector_source = source
+        self._refresh_context_view()
+
+    def _refresh_context_view(self) -> None:
+        source = self._active_inspector_source
+        data = self._context_data.get(source, {}) or {}
+        title_map = {
+            "overview": "Overview",
+            "traditional": get_approach("traditional").label,
+            "rag": get_approach("rag").label,
+            "rlm": get_approach("rlm").label,
+        }
+        lines = [f"[bold]Source:[/] {title_map.get(source, source.title())}"]
+        if not data:
+            lines.append("[dim]Run a question to populate context metrics.[/]")
+        else:
+            for key, value in data.items():
+                lines.append(f"[dim]{key}:[/] {value}")
+        panel = Panel("\n".join(lines), border_style="yellow", title="📚 Context View")
+        self.query_one("#context-view-panel", Static).update(panel)
 
     @work(thread=True)
     def _init_docs(self) -> None:
@@ -218,15 +257,21 @@ class RLMApp(App):
         self.doc_map = discover_docs(DATA_DIR, PROCESSED_DIR)
 
         if not self.doc_map:
-            self.call_from_thread(chat.write, Text(f"⚠️ No documents found. Add PDFs to {DATA_DIR}/", style="bold red"))
-            self.call_from_thread(inspector.write, Text(f"No documents found in {DATA_DIR}/ or {PROCESSED_DIR}/.", style="bold red"))
+            self.call_from_thread(chat.write, Text(f"⚠️ No supported documents found in {DATA_DIR}/", style="bold red"))
+            self.call_from_thread(inspector.write, Text(f"No supported documents found in {DATA_DIR}/.", style="bold red"))
             return
 
-        # ── Inspector: full document listing ──
+        # ── Inspector: compact document summary (avoid huge startup dump) ──
         doc_ids = list(self.doc_map.keys())
         self.call_from_thread(inspector.write, Text(f"📄 {len(doc_ids)} documents ready:", style="bold"))
-        for did in doc_ids:
+        preview_n = 10
+        for did in doc_ids[:preview_n]:
             self.call_from_thread(inspector.write, Text(f"  • {did}", style="dim"))
+        if len(doc_ids) > preview_n:
+            self.call_from_thread(
+                inspector.write,
+                Text(f"  ... and {len(doc_ids) - preview_n} more (use /docs for full list)", style="dim"),
+            )
         self.call_from_thread(inspector.write, Text(""))
         self.call_from_thread(inspector.write, Text(f"Context window: {self.cfg.context_window:,} tokens ({self.cfg.llm_model})", style="dim"))
         self.call_from_thread(inspector.write, Text(""))
@@ -237,13 +282,16 @@ class RLMApp(App):
         self.call_from_thread(chat.write, Text(""))
 
         docs_text = f"📄 {len(self.doc_map)} docs"
-        for did in self.doc_map:
+        for did in doc_ids[:preview_n]:
             docs_text += f"\n  • {did}"
+        if len(doc_ids) > preview_n:
+            docs_text += f"\n  ... and {len(doc_ids) - preview_n} more"
         self.call_from_thread(self.query_one("#docs-label", Static).update, docs_text)
 
         # ── RAG initialization ──
         if "rag" in self.enabled_approaches:
-            self.call_from_thread(inspector.write, Text("📚 RAG Initialization", style="bold magenta"))
+            rag_label = get_approach("rag").label
+            self.call_from_thread(inspector.write, Text(f"📚 {rag_label} Initialization", style="bold magenta"))
             self.call_from_thread(inspector.write, Text(""))
 
             def _on_rag_init(evt: str, detail: str) -> None:
@@ -255,14 +303,14 @@ class RLMApp(App):
                 self.rag_ready = True
                 self.rag_last_error = ""
                 self.call_from_thread(inspector.write, Text(""))
-                self.call_from_thread(inspector.write, Text("✅ RAG collection ready.", style="green"))
-                self.call_from_thread(chat.write, Text("✅ RAG is ready.", style="green"))
+                self.call_from_thread(inspector.write, Text(f"✅ {rag_label} collection ready.", style="green"))
+                self.call_from_thread(chat.write, Text(f"✅ {rag_label} is ready.", style="green"))
             except Exception as e:
                 self.rag_ready = False
                 self.rag_last_error = str(e)
                 self.enabled_approaches = [a for a in self.enabled_approaches if a != "rag"]
-                self.call_from_thread(inspector.write, Text(f"⚠️ RAG init failed: {e}", style="yellow"))
-                self.call_from_thread(chat.write, Text(f"⚠️ RAG init failed; disabled for this session.", style="yellow"))
+                self.call_from_thread(inspector.write, Text(f"⚠️ {rag_label} init failed: {e}", style="yellow"))
+                self.call_from_thread(chat.write, Text(f"⚠️ {rag_label} init failed; disabled for this session.", style="yellow"))
             self.call_from_thread(inspector.write, Text(""))
 
         # ── Ready state ──
@@ -309,6 +357,7 @@ class RLMApp(App):
             elif cmd == "/help":
                 chat.write(Text("Commands:", style="bold"))
                 chat.write(Text("  /docs         — list all documents", style="dim"))
+                chat.write(Text("  /models       — list available models for current provider", style="dim"))
                 chat.write(Text("  /test         — run query from RLM_TEST_QUERY in .env", style="dim"))
                 chat.write(Text("  /config [N]   — show/set max iterations (0 = until done, e.g. /config 15)", style="dim"))
                 chat.write(Text("  /traditional  — show last traditional run stats (context window, truncation)", style="dim"))
@@ -325,6 +374,9 @@ class RLMApp(App):
                 chat.write(Text(f"📄 {len(self.doc_map)} documents:", style="bold"))
                 for did, path in self.doc_map.items():
                     chat.write(Text(f"  • {did}  ({path})", style="dim"))
+                return
+            elif cmd == "/models":
+                self.run_model_list()
                 return
             elif cmd == "/test":
                 test_query = os.getenv("RLM_TEST_QUERY", "").strip()
@@ -524,13 +576,61 @@ class RLMApp(App):
         popup.display = True
 
     @work(thread=True)
+    def run_model_list(self) -> None:
+        """List available models for the active provider."""
+        chat = self.query_one("#chat-log", RichLog)
+        inspector = self.query_one("#inspector-log", RichLog)
+        provider = self.cfg.llm_provider
+        model = self.cfg.llm_model
+
+        self.call_from_thread(chat.write, Text("🔎 Fetching available models...", style="dim"))
+        try:
+            if provider == "ollama":
+                models = list_ollama_models(self.cfg)
+                header = f"Ollama models at {self.cfg.llm_base_url} ({len(models)} found):"
+            elif provider == "openai":
+                models = list_openai_models(self.cfg)
+                header = f"OpenAI-compatible models at {self.cfg.llm_base_url} ({len(models)} found):"
+            else:
+                self.call_from_thread(
+                    chat.write,
+                    Text(
+                        f"/models currently supports ollama/openai providers. "
+                        f"Current provider: {provider}. Configured model: {model}",
+                        style="yellow",
+                    ),
+                )
+                return
+            self.call_from_thread(
+                chat.write,
+                Text(
+                    header,
+                    style="bold",
+                ),
+            )
+            self.call_from_thread(inspector.write, Text("🧾 /models output", style="bold"))
+            if not models:
+                self.call_from_thread(chat.write, Text("  (none found)", style="dim"))
+                self.call_from_thread(inspector.write, Text("  (none found)", style="dim"))
+                return
+            for m in models:
+                marker = "✅" if m == model else "•"
+                style = "green" if m == model else "dim"
+                self.call_from_thread(chat.write, Text(f"  {marker} {m}", style=style))
+                self.call_from_thread(inspector.write, Text(f"  {marker} {m}", style=style))
+        except Exception as e:
+            self.call_from_thread(chat.write, Text(f"❌ /models failed: {e}", style="red"))
+            self.call_from_thread(inspector.write, Text(f"❌ /models failed: {e}", style="red"))
+
+    @work(thread=True)
     def run_rag_init(self, manual: bool = False, reset: bool = False) -> None:
         """Retry/check or reset RAG readiness from command without restarting app."""
         chat = self.query_one("#chat-log", RichLog)
         inspector = self.query_one("#inspector-log", RichLog)
+        rag_label = get_approach("rag").label
 
         self.call_from_thread(inspector.clear)
-        self.call_from_thread(inspector.write, Text("📚 RAG Initialization", style="bold"))
+        self.call_from_thread(inspector.write, Text(f"📚 {rag_label} Initialization", style="bold"))
         self.call_from_thread(inspector.write, Text(""))
 
         def _on_rag_evt(evt: str, detail: str) -> None:
@@ -550,7 +650,7 @@ class RLMApp(App):
             self.call_from_thread(
                 chat.write,
                 Text(
-                    f"✅ RAG is ready. Collection '{status.collection_name}': "
+                    f"✅ {rag_label} is ready. Collection '{status.collection_name}': "
                     f"{status.unique_docs} docs, {status.chunk_objects} chunks.",
                     style="green",
                 ),
@@ -559,13 +659,14 @@ class RLMApp(App):
             self.rag_ready = False
             self.rag_last_error = str(e)
             if manual:
-                self.call_from_thread(chat.write, Text(f"⚠️ RAG retry failed: {e}", style="yellow"))
+                self.call_from_thread(chat.write, Text(f"⚠️ {rag_label} retry failed: {e}", style="yellow"))
 
     @work(thread=True)
     def run_rag_status(self) -> None:
         """Fetch and print live RAG collection stats."""
         chat = self.query_one("#chat-log", RichLog)
         inspector = self.query_one("#inspector-log", RichLog)
+        rag_label = get_approach("rag").label
 
         def _on_rag_evt(evt: str, detail: str) -> None:
             if evt == "rag_stage":
@@ -577,7 +678,7 @@ class RLMApp(App):
             self.call_from_thread(
                 chat.write,
                 Text(
-                    f"RAG collection '{status.collection_name}': "
+                    f"{rag_label} collection '{status.collection_name}': "
                     f"{status.unique_docs} docs, {status.chunk_objects} chunks.",
                     style="dim",
                 ),
@@ -585,7 +686,7 @@ class RLMApp(App):
         except Exception as e:
             self.rag_ready = False
             self.rag_last_error = str(e)
-            self.call_from_thread(chat.write, Text(f"⚠️ RAG status check failed: {e}", style="dim red"))
+            self.call_from_thread(chat.write, Text(f"⚠️ {rag_label} status check failed: {e}", style="dim red"))
 
     @work(thread=True)
     def run_rlm(self, question: str) -> None:
@@ -613,16 +714,16 @@ class RLMApp(App):
         self.call_from_thread(inspector_rlm.clear)
 
         def _update_live_tokens(step: int, usage: TokenUsage) -> None:
-            """Update the token panel with a running total."""
-            t = Table(show_header=True, header_style="bold", border_style="cyan", expand=True, title="⏱ Live Tokens")
-            t.add_column("", width=10)
-            t.add_column("Input", justify="right", width=8)
-            t.add_column("Output", justify="right", width=8)
-            t.add_column("Total", justify="right", width=8)
-            t.add_row(f"step {step}", f"{usage.input_tokens:,}", f"{usage.output_tokens:,}", f"{usage.total_tokens:,}", style="bold")
+            """Update live token stats into context view data."""
             sess = self.session_usage
-            t.add_row("session", f"{sess.input_tokens + usage.input_tokens:,}", f"{sess.output_tokens + usage.output_tokens:,}", f"{sess.total_tokens + usage.total_tokens:,}", style="dim")
-            self.call_from_thread(self.query_one("#token-panel", Static).update, t)
+            self._context_data["rlm"]["live step"] = step
+            self._context_data["rlm"]["live input"] = f"{usage.input_tokens:,}"
+            self._context_data["rlm"]["live output"] = f"{usage.output_tokens:,}"
+            self._context_data["rlm"]["live total"] = f"{usage.total_tokens:,}"
+            self._context_data["overview"]["session total tokens"] = (
+                f"{sess.total_tokens + usage.total_tokens:,}"
+            )
+            self.call_from_thread(self._refresh_context_view)
 
         def on_event(event_type: str, detail: str) -> None:
             """Callback from the sandbox — update the inspector panel."""
@@ -633,13 +734,6 @@ class RLMApp(App):
             if event_type == "iteration":
                 self._live_iterations.append(detail)
                 self._live_step += 1
-
-            # update concept note
-            if event_type in CONCEPT_NOTES:
-                self.call_from_thread(
-                    self.query_one("#concept-panel", Static).update,
-                    Panel(CONCEPT_NOTES[event_type], border_style="yellow", title="📚 Paper Concept")
-                )
 
             if event_type == "iteration":
                 self.call_from_thread(inspector.write, Text(f"\n{'─'*40}", style="dim"))
@@ -711,6 +805,9 @@ class RLMApp(App):
         planner_calls = 0
         sub_llm_calls = 0
         judge_calls = 0
+        trad_app = get_approach("traditional")
+        rag_app = get_approach("rag")
+        rlm_app = get_approach("rlm")
 
         # If RLM isn't enabled, still apply the same router decision so generic/chat
         # questions can bypass heavy document approaches.
@@ -747,6 +844,21 @@ class RLMApp(App):
                     ),
                 )
                 candidate_calls = 1
+                self._context_data["overview"] = {
+                    "baseline": "(none)",
+                    "candidate": "Direct",
+                    "semantic similarity": "n/a",
+                    "tfidf cosine": "n/a",
+                    "lexical overlap": "n/a",
+                    "evidence docs overlap": "n/a",
+                    "evidence docs jaccard": "n/a",
+                    "llm calls total": router_calls + candidate_calls,
+                    "calls breakdown": (
+                        f"router={router_calls}, baseline=0, candidate={candidate_calls}, "
+                        "planner=0, sub=0, judge=0"
+                    ),
+                }
+                self.call_from_thread(self._refresh_context_view)
                 self.call_from_thread(chat.write, Text(""))
                 self.call_from_thread(inspector.write, Text("✅ Direct response complete", style="dim green"))
                 self.call_from_thread(inspector_rlm.write, Text("✅ Direct response complete", style="dim green"))
@@ -754,11 +866,11 @@ class RLMApp(App):
 
         if "traditional" in enabled:
             self.call_from_thread(chat.write, Text(""))
-            self.call_from_thread(chat.write, Text("🐌 Traditional (all docs in one prompt):", style="bold dim"))
+            self.call_from_thread(chat.write, Text(f"🐌 {trad_app.label} (all docs in one prompt):", style=f"bold {trad_app.style}"))
             self.call_from_thread(chat.write, Text(""))
             self.call_from_thread(inspector_traditional.clear)
-            self.call_from_thread(inspector.write, Text("🐌 Traditional Approach", style="bold"))
-            self.call_from_thread(inspector_traditional.write, Text("🐌 Traditional Approach", style="bold"))
+            self.call_from_thread(inspector.write, Text(f"🐌 {trad_app.label} Approach", style="bold"))
+            self.call_from_thread(inspector_traditional.write, Text(f"🐌 {trad_app.label} Approach", style="bold"))
             self.call_from_thread(inspector.write, Text(""))
             self.call_from_thread(inspector_traditional.write, Text(""))
             self.call_from_thread(inspector.write, Text("⏳ Starting...", style="dim"))
@@ -769,55 +881,65 @@ class RLMApp(App):
                     self.call_from_thread(inspector.write, Text(f"  • {detail}", style="dim"))
                     self.call_from_thread(inspector_traditional.write, Text(f"  • {detail}", style="dim"))
 
-            trad_exec = get_approach("traditional").run(
+            try:
+                trad_exec = get_approach("traditional").run(
                 doc_map=self.doc_map,
                 question=question,
-                history=self.history,
+                    history=self.history,
                 cfg=self.cfg,
                 on_event=on_traditional_event,
             )
+            except Exception as e:
+                self.call_from_thread(chat.write, Text("❌ Traditional approach failed.", style="bold red"))
+                for ln in str(e).splitlines():
+                    self.call_from_thread(chat.write, Text(f"   {ln}", style="red"))
+                self.call_from_thread(inspector.write, Text(f"⚠️ Traditional failed: {e}", style="bold red"))
+                self.call_from_thread(inspector_traditional.write, Text(f"⚠️ Traditional failed: {e}", style="bold red"))
+                return
             trad_result = trad_exec.answer
             baseline_calls += 1
             trad_t = trad_result.usage
-            baseline_results.append(("Traditional", trad_result, "dim red"))
+            trad_cost = estimate_cost(trad_t, self.cfg.llm_model)
+            baseline_results.append((trad_app.label, trad_result, trad_app.style))
             baseline_for_eval = baseline_for_eval or trad_result
             if baseline_for_eval is trad_result:
-                baseline_name_for_eval = "Traditional"
+                baseline_name_for_eval = trad_app.label
             ts = trad_result.traditional_stats
-
-            self.call_from_thread(inspector_traditional.clear)
-            self.call_from_thread(inspector.write, Text("🐌 Traditional Approach", style="bold"))
-            self.call_from_thread(inspector_traditional.write, Text("🐌 Traditional Approach", style="bold"))
-            self.call_from_thread(inspector.write, Text(""))
-            self.call_from_thread(inspector_traditional.write, Text(""))
-            if ts:
-                fill = int(ts.context_used_pct / 5)
-                bar = "█" * fill + "░" * (20 - fill)
-                fill_color = "green" if ts.context_used_pct < 50 else "yellow" if ts.context_used_pct < 90 else "bold red"
-                self.call_from_thread(inspector.write, Text(f"  Context window: {ts.context_window:,} tokens", style="dim"))
-                self.call_from_thread(inspector_traditional.write, Text(f"  Context window: {ts.context_window:,} tokens", style="dim"))
-                self.call_from_thread(inspector.write, Text(f"  [{bar}] {ts.context_used_pct:.0f}% full", style=fill_color))
-                self.call_from_thread(inspector_traditional.write, Text(f"  [{bar}] {ts.context_used_pct:.0f}% full", style=fill_color))
-                self.call_from_thread(inspector.write, Text(""))
-                self.call_from_thread(inspector_traditional.write, Text(""))
-                self.call_from_thread(inspector.write, Text(f"  Corpus: {ts.total_chars:,} chars ({ts.total_docs} docs)", style="dim"))
-                self.call_from_thread(inspector_traditional.write, Text(f"  Corpus: {ts.total_chars:,} chars ({ts.total_docs} docs)", style="dim"))
-                self.call_from_thread(inspector.write, Text(f"  Sent:   {ts.chars_sent:,} chars ({ts.docs_included} docs fit)", style="dim"))
-                self.call_from_thread(inspector_traditional.write, Text(f"  Sent:   {ts.chars_sent:,} chars ({ts.docs_included} docs fit)", style="dim"))
+            self._context_data["traditional"] = {
+                "tokens": f"{trad_t.total_tokens:,}",
+                "cost": f"${trad_cost:.4f}",
+                "input/output": f"{trad_t.input_tokens:,} / {trad_t.output_tokens:,}",
+                "context window": (f"{ts.context_window:,} tokens" if ts else "n/a"),
+                "context bar": (
+                    f"[{'#' * int((ts.context_used_pct or 0) / 5):<20}] {ts.context_used_pct:.0f}% full"
+                    if ts else "n/a"
+                ),
+                "corpus chars": (f"{ts.total_chars:,} ({ts.total_docs} docs)" if ts else "n/a"),
+                "sent chars": (
+                    f"{ts.chars_sent:,} ({ts.docs_included} docs fit)"
+                    if ts else "n/a"
+                ),
+                "docs in prompt": (
+                    f"{ts.docs_included}/{ts.total_docs}" if ts else "n/a"
+                ),
+                "truncated": "yes" if (ts and ts.truncated) else "no",
+                "context used": (f"{ts.context_used_pct:.0f}%" if ts else "n/a"),
+            }
+            self.call_from_thread(self._refresh_context_view)
 
             self.call_from_thread(chat.write, Markdown(trad_result.answer))
             self.call_from_thread(chat.write, Text(""))
-            self.call_from_thread(chat.write, Text(f"  ({trad_t.input_tokens:,} in / {trad_t.output_tokens:,} out / {trad_t.total_tokens:,} tokens  ${estimate_cost(trad_t, self.cfg.llm_model):.4f})", style="dim red"))
+            self.call_from_thread(chat.write, Text(f"  ({trad_t.input_tokens:,} in / {trad_t.output_tokens:,} out / {trad_t.total_tokens:,} tokens  ${estimate_cost(trad_t, self.cfg.llm_model):.4f})", style=trad_app.style))
             self.call_from_thread(chat.write, Text(""))
 
         if "rag" in enabled:
             self.call_from_thread(chat.write, Text("─" * 50, style="dim"))
             self.call_from_thread(chat.write, Text(""))
-            self.call_from_thread(chat.write, Text("📚 Basic RAG (vector retrieval baseline):", style="bold magenta"))
+            self.call_from_thread(chat.write, Text(f"📚 {rag_app.label} (vector retrieval baseline):", style=f"bold {rag_app.style}"))
             self.call_from_thread(chat.write, Text(""))
             self.call_from_thread(inspector_rag.clear)
-            self.call_from_thread(inspector.write, Text("📚 Basic RAG Approach", style="bold"))
-            self.call_from_thread(inspector_rag.write, Text("📚 Basic RAG Approach", style="bold"))
+            self.call_from_thread(inspector.write, Text(f"📚 {rag_app.label} Approach", style="bold"))
+            self.call_from_thread(inspector_rag.write, Text(f"📚 {rag_app.label} Approach", style="bold"))
             self.call_from_thread(inspector.write, Text(""))
             self.call_from_thread(inspector_rag.write, Text(""))
 
@@ -836,7 +958,23 @@ class RLMApp(App):
                 )
                 rag_result = rag_exec.answer
                 rag_stats = rag_exec.metadata.get("rag_stats")
+                rag_cost = estimate_cost(rag_result.usage, self.cfg.llm_model)
                 baseline_calls += 1
+                if isinstance(rag_stats, dict):
+                    self._context_data["rag"] = {
+                        "tokens": f"{rag_result.usage.total_tokens:,}",
+                        "cost": f"${rag_cost:.4f}",
+                        "input/output": f"{rag_result.usage.input_tokens:,} / {rag_result.usage.output_tokens:,}",
+                        "chunks retrieved": int(rag_stats.get("retrieved_chunks", 0)),
+                        "unique docs": int(rag_stats.get("unique_docs_retrieved", 0)),
+                        "retrieval ms": int(rag_stats.get("retrieval_ms", 0.0)),
+                    }
+                else:
+                    self._context_data["rag"] = {
+                        "tokens": f"{rag_result.usage.total_tokens:,}",
+                        "cost": f"${rag_cost:.4f}",
+                    }
+                self.call_from_thread(self._refresh_context_view)
             except Exception as e:
                 # Never let baseline failures kill the full run.
                 self.call_from_thread(inspector.write, Text(f"  ⚠️ RAG failed: {e}", style="bold red"))
@@ -848,10 +986,10 @@ class RLMApp(App):
             if rag_result is None:
                 self.call_from_thread(chat.write, Text("⚠️ RAG baseline failed; continuing with remaining approaches.", style="yellow"))
             else:
-                baseline_results.append(("Basic RAG", rag_result, "magenta"))
+                baseline_results.append((rag_app.label, rag_result, rag_app.style))
                 baseline_for_eval = baseline_for_eval or rag_result
                 if baseline_for_eval is rag_result:
-                    baseline_name_for_eval = "Basic RAG"
+                    baseline_name_for_eval = rag_app.label
                 self.call_from_thread(chat.write, Markdown(rag_result.answer))
                 self.call_from_thread(chat.write, Text(""))
                 self.call_from_thread(
@@ -859,7 +997,7 @@ class RLMApp(App):
                     Text(
                         f"  ({rag_result.usage.input_tokens:,} in / {rag_result.usage.output_tokens:,} out / "
                         f"{rag_result.usage.total_tokens:,} tokens  ${estimate_cost(rag_result.usage, self.cfg.llm_model):.4f})",
-                        style="dim magenta",
+                        style=rag_app.style,
                     ),
                 )
                 if isinstance(rag_stats, dict):
@@ -878,18 +1016,26 @@ class RLMApp(App):
             router_calls = 1
             self.call_from_thread(chat.write, Text("─" * 50, style="dim"))
             self.call_from_thread(chat.write, Text(""))
-            self.call_from_thread(chat.write, Text("🚀 RLM (targeted exploration):", style="bold green"))
+            self.call_from_thread(chat.write, Text(f"🚀 {rlm_app.label} (targeted exploration):", style=f"bold {rlm_app.style}"))
             self.call_from_thread(chat.write, Text(""))
             self.call_from_thread(inspector.write, Text("\n🚀 Starting RLM agent...", style="bold"))
             self.call_from_thread(inspector_rlm.write, Text("\n🚀 Starting RLM agent...", style="bold"))
 
-            rlm_exec = get_approach("rlm").run(
+            try:
+                rlm_exec = get_approach("rlm").run(
                 doc_map=self.doc_map,
                 question=question,
                 history=self.history,
                 cfg=self.cfg,
                 on_event=on_event_with_tokens,
             )
+            except Exception as e:
+                self.call_from_thread(chat.write, Text("❌ RLM approach failed.", style="bold red"))
+                for ln in str(e).splitlines():
+                    self.call_from_thread(chat.write, Text(f"   {ln}", style="red"))
+                self.call_from_thread(inspector.write, Text(f"⚠️ RLM failed: {e}", style="bold red"))
+                self.call_from_thread(inspector_rlm.write, Text(f"⚠️ RLM failed: {e}", style="bold red"))
+                return
             result = rlm_exec.answer
             self.session_usage += result.usage
             self.history.append(ChatMessage(role="assistant", content=result.answer))
@@ -900,6 +1046,17 @@ class RLMApp(App):
                 candidate_calls = planner_calls + sub_llm_calls
             else:
                 candidate_calls = 1
+            rlm_docs = extract_evidence_docs(result.evidence_manifest)
+            self._context_data["rlm"] = {
+                "tokens": f"{result.usage.total_tokens:,}",
+                "cost": f"${estimate_cost(result.usage, self.cfg.llm_model):.4f}",
+                "input/output": f"{result.usage.input_tokens:,} / {result.usage.output_tokens:,}",
+                "iterations": len(result.iteration_stats),
+                "planner calls": planner_calls,
+                "sub calls": sub_llm_calls,
+                "docs touched": len(rlm_docs),
+            }
+            self.call_from_thread(self._refresh_context_view)
         else:
             if baseline_results:
                 result = baseline_results[-1][1]
@@ -955,7 +1112,7 @@ class RLMApp(App):
             baseline_for_eval = baseline_results[0][1]
             baseline_name_for_eval = baseline_results[0][0]
             candidate_for_eval = result
-            candidate_name_for_eval = "RLM"
+            candidate_name_for_eval = rlm_app.label
         elif len(baseline_results) >= 2:
             baseline_for_eval = baseline_results[0][1]
             baseline_name_for_eval = baseline_results[0][0]
@@ -975,7 +1132,7 @@ class RLMApp(App):
                 btok = bres.usage.total_tokens
                 bcost = estimate_cost(bres.usage, self.cfg.llm_model)
                 self.call_from_thread(chat.write, Text(f"  │ {name:<12}: {btok:>8,} tokens  ${bcost:.4f}", style=style))
-            icon = "🚀" if candidate_name_for_eval == "RLM" else "✅"
+            icon = "🚀" if candidate_name_for_eval == rlm_app.label else "✅"
             self.call_from_thread(chat.write, Text(f"  │ {icon} {candidate_name_for_eval:<10}: {cand_t.total_tokens:>8,} tokens  ${cand_cost:.4f}", style="green"))
             savings_pct = max(0, 100 - int(cand_t.total_tokens / max(1, ref_res.usage.total_tokens) * 100))
             if savings_pct > 0:
@@ -1055,7 +1212,43 @@ class RLMApp(App):
                 ),
             )
             self.call_from_thread(chat.write, Text(f"  • Evidence docs jaccard: {ev_jaccard:.2f}", style="dim"))
+            token_savings_pct = (
+                (1.0 - (candidate_for_eval.usage.total_tokens / max(1, baseline_for_eval.usage.total_tokens))) * 100.0
+            )
+            semantic_score = judge.semantic_score if "judge" in locals() else 0.0
+            similar_enough = semantic_score >= 0.70 or tfidf_sim >= 0.45
+            more_efficient = token_savings_pct > 0
+            verdict_icon = "✅" if (similar_enough and more_efficient) else "⚠️"
+            verdict_text = (
+                f"{verdict_icon} Efficiency verdict: "
+                f"similar_enough={'yes' if similar_enough else 'no'} "
+                f"(semantic={semantic_score:.2f}, tfidf={tfidf_sim:.2f}), "
+                f"token_savings={token_savings_pct:+.1f}%"
+            )
+            self.call_from_thread(
+                chat.write,
+                Text(verdict_text, style="bold green" if (similar_enough and more_efficient) else "yellow"),
+            )
             total_llm_calls = router_calls + baseline_calls + candidate_calls + judge_calls
+            self._context_data["overview"] = {
+                "baseline": baseline_name_for_eval,
+                "candidate": candidate_name_for_eval,
+                "semantic similarity": (
+                    f"{judge.semantic_score:.2f}" if 'judge' in locals() else "n/a"
+                ),
+                "tfidf cosine": f"{tfidf_sim:.2f}",
+                "lexical overlap": f"{lexical:.2f}",
+                "evidence docs overlap": f"{len(ev_overlap)}",
+                "evidence docs jaccard": f"{ev_jaccard:.2f}",
+                "token savings %": f"{token_savings_pct:+.1f}",
+                "similar enough": "yes" if similar_enough else "no",
+                "llm calls total": total_llm_calls,
+                "calls breakdown": (
+                    f"router={router_calls}, baseline={baseline_calls}, candidate={candidate_calls}, "
+                    f"planner={planner_calls}, sub={sub_llm_calls}, judge={judge_calls}"
+                ),
+            }
+            self.call_from_thread(self._refresh_context_view)
             self.call_from_thread(chat.write, Text("  • LLM calls:", style="dim"))
             self.call_from_thread(
                 chat.write,

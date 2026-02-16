@@ -39,7 +39,7 @@ Minimum recommended first run:
 
 ```env
 LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o-mini
+LLM_MODEL=gpt-5-mini
 OPENAI_API_KEY=sk-...
 ENABLED_APPROACHES=rlm,rag
 ```

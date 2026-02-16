@@ -13,6 +13,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
@@ -47,6 +48,9 @@ def enabled_approaches_from_env(default: str = "rlm,traditional") -> List[str]:
 # Known context window sizes (tokens) for common models
 MODEL_CONTEXT_WINDOWS = {
     # OpenAI
+    "gpt-5": 128_000,
+    "gpt-5-mini": 128_000,
+    "gpt-5-nano": 128_000,
     "gpt-4o": 128_000,
     "gpt-4o-mini": 128_000,
     "gpt-4-turbo": 128_000,
@@ -87,6 +91,11 @@ def get_context_window(model: str) -> int:
 # Pricing per 1M tokens (USD) — input / output
 MODEL_PRICING = {
     # OpenAI
+    # Keep current defaults on the gpt-5 family for forward compatibility.
+    # If your endpoint uses different rates, update these values locally.
+    "gpt-5": (2.50, 10.00),
+    "gpt-5-mini": (0.15, 0.60),
+    "gpt-5-nano": (0.05, 0.20),
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4-turbo": (10.00, 30.00),
@@ -138,15 +147,28 @@ class Config:
 
     @staticmethod
     def from_env() -> Config:
-        provider = os.getenv("LLM_PROVIDER", "ollama")
-        default_models = {"ollama": "qwen2.5:7b", "openai": "gpt-4o-mini", "anthropic": "claude-sonnet-4-20250514"}
+        raw_provider = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+        if raw_provider in SUPPORTED_PROVIDERS:
+            provider = raw_provider
+        elif raw_provider.startswith("openai"):
+            provider = "openai"
+        elif raw_provider.startswith("anthropic"):
+            provider = "anthropic"
+        elif raw_provider.startswith("ollama"):
+            provider = "ollama"
+        else:
+            raise ValueError(
+                f"Unsupported LLM_PROVIDER '{raw_provider}'. "
+                f"Use one of: {', '.join(SUPPORTED_PROVIDERS)}"
+            )
+        default_models = {"ollama": "qwen2.5:7b", "openai": "gpt-5-mini", "anthropic": "claude-sonnet-4-20250514"}
         default_urls = {"ollama": "http://localhost:11434", "openai": "https://api.openai.com", "anthropic": "https://api.anthropic.com"}
         api_key = (
             os.getenv("OPENAI_API_KEY", "") if provider == "openai"
             else os.getenv("ANTHROPIC_API_KEY", "") if provider == "anthropic"
             else os.getenv("LLM_API_KEY", "")
         )
-        model = os.getenv("LLM_MODEL", default_models.get(provider, "gpt-4o-mini"))
+        model = os.getenv("LLM_MODEL", default_models.get(provider, "gpt-5-mini"))
         context_window = int(os.getenv("LLM_CONTEXT_WINDOW", "0")) or get_context_window(model)
         return Config(
             llm_provider=provider,
@@ -190,17 +212,119 @@ class LLMResult:
 # ────────────────────────── LLM providers ──────────────────────────
 
 def _call_ollama(prompt: str, cfg: Config) -> LLMResult:
-    r = requests.post(
-        f"{cfg.llm_base_url}/api/generate",
-        json={"model": cfg.llm_model, "prompt": prompt, "stream": False, "options": {"temperature": cfg.llm_temperature}},
-        timeout=180,
-    )
-    r.raise_for_status()
-    body = r.json()
-    return LLMResult(
-        text=body["response"],
-        usage=TokenUsage(body.get("prompt_eval_count", 0), body.get("eval_count", 0), body.get("prompt_eval_count", 0) + body.get("eval_count", 0)),
-    )
+    _validate_ollama_base_url(cfg.llm_base_url)
+    url = f"{cfg.llm_base_url.rstrip('/')}/api/generate"
+    payload = {
+        "model": cfg.llm_model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": cfg.llm_temperature},
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=180)
+        r.raise_for_status()
+        body = r.json()
+        return LLMResult(
+            text=body["response"],
+            usage=TokenUsage(
+                body.get("prompt_eval_count", 0),
+                body.get("eval_count", 0),
+                body.get("prompt_eval_count", 0) + body.get("eval_count", 0),
+            ),
+        )
+    except requests.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = (e.response.text or "").strip()
+        except Exception:
+            body_text = ""
+        lower = body_text.lower()
+        if "model" in lower and "not found" in lower:
+            available = _safe_ollama_list(cfg)
+            raise RuntimeError(
+                "Ollama model not found.\n"
+                f"Configured model: {cfg.llm_model}\n"
+                f"Endpoint: {cfg.llm_base_url}\n"
+                "Run `ollama pull <model>` or change LLM_MODEL.\n"
+                f"Available models from `/api/tags`:\n{available}"
+            ) from e
+        raise RuntimeError(f"Ollama request failed: {type(e).__name__}: {e}") from e
+    except requests.RequestException as e:
+        raise RuntimeError(
+            "Could not connect to Ollama.\n"
+            f"Endpoint: {cfg.llm_base_url}\n"
+            f"Details: {type(e).__name__}: {e}"
+        ) from e
+
+
+def list_ollama_models(cfg: Config, timeout_s: float = 8.0) -> List[str]:
+    """Return model names from Ollama /api/tags."""
+    _validate_ollama_base_url(cfg.llm_base_url)
+    base = cfg.llm_base_url.rstrip("/")
+    resp = requests.get(f"{base}/api/tags", timeout=timeout_s)
+    resp.raise_for_status()
+    body = resp.json() if resp.content else {}
+    models = body.get("models", [])
+    out: List[str] = []
+    if isinstance(models, list):
+        for m in models:
+            if isinstance(m, dict):
+                name = str(m.get("name", "")).strip()
+                if name:
+                    out.append(name)
+    return out
+
+
+def list_openai_models(cfg: Config) -> List[str]:
+    """Return model IDs from an OpenAI-compatible /v1/models endpoint."""
+    from openai import OpenAI
+
+    base = cfg.llm_base_url.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    client = OpenAI(api_key=cfg.llm_api_key, base_url=base)
+    models = client.models.list()
+    out: List[str] = []
+    for m in getattr(models, "data", []) or []:
+        mid = str(getattr(m, "id", "")).strip()
+        if mid:
+            out.append(mid)
+    return sorted(out)
+
+
+def _safe_ollama_list(cfg: Config) -> str:
+    """Best-effort Ollama model list for user-facing diagnostics."""
+    try:
+        models = list_ollama_models(cfg)
+        if not models:
+            return "(no models found)"
+        return "\n".join(models)
+    except Exception as ex:
+        return f"(unable to query /api/tags: {type(ex).__name__}: {ex})"
+
+
+def _safe_openai_list(cfg: Config) -> str:
+    """Best-effort OpenAI-compatible model list for user-facing diagnostics."""
+    try:
+        models = list_openai_models(cfg)
+        if not models:
+            return "(no models found)"
+        return "\n".join(models)
+    except Exception as ex:
+        return f"(unable to query /v1/models: {type(ex).__name__}: {ex})"
+
+
+def _validate_ollama_base_url(base_url: str) -> None:
+    """Catch common malformed host typos early (e.g. trailing letters on IPv4)."""
+    parsed = urlparse((base_url or "").strip())
+    host = parsed.hostname or ""
+    if re.match(r"^\d+\.\d+\.\d+\.\d+[a-zA-Z]+$", host):
+        raise RuntimeError(
+            "Invalid LLM_BASE_URL for Ollama.\n"
+            f"Endpoint: {base_url}\n"
+            "Host looks like an IPv4 address with an extra trailing character. "
+            "Example fix: http://192.168.1.117:11434"
+        )
 
 
 def _call_openai(prompt: str, cfg: Config) -> LLMResult:
@@ -209,16 +333,40 @@ def _call_openai(prompt: str, cfg: Config) -> LLMResult:
     if not base.endswith("/v1"):
         base = f"{base}/v1"
     client = OpenAI(api_key=cfg.llm_api_key, base_url=base)
-    resp = client.chat.completions.create(
-        model=cfg.llm_model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=cfg.llm_temperature,
-    )
-    u = resp.usage
-    return LLMResult(
-        text=resp.choices[0].message.content or "",
-        usage=TokenUsage(u.prompt_tokens if u else 0, u.completion_tokens if u else 0, u.total_tokens if u else 0),
-    )
+    try:
+        try:
+            resp = client.chat.completions.create(
+                model=cfg.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=cfg.llm_temperature,
+            )
+        except Exception as temp_err:
+            # Some OpenAI-compatible endpoints/models only allow default temperature.
+            tmsg = str(temp_err).lower()
+            if "temperature" in tmsg and "unsupported" in tmsg:
+                resp = client.chat.completions.create(
+                    model=cfg.llm_model,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+            else:
+                raise
+        u = resp.usage
+        return LLMResult(
+            text=resp.choices[0].message.content or "",
+            usage=TokenUsage(u.prompt_tokens if u else 0, u.completion_tokens if u else 0, u.total_tokens if u else 0),
+        )
+    except Exception as e:
+        msg = str(e).lower()
+        if "model" in msg and "not found" in msg:
+            available = _safe_openai_list(cfg)
+            raise RuntimeError(
+                "Configured OpenAI model was not found on this endpoint.\n"
+                f"Configured model: {cfg.llm_model}\n"
+                f"Endpoint: {cfg.llm_base_url}\n"
+                "Set LLM_MODEL to a model that exists on this provider.\n"
+                f"Available models from `/v1/models`:\n{available}"
+            ) from e
+        raise RuntimeError(f"OpenAI request failed: {type(e).__name__}: {e}") from e
 
 
 def _call_anthropic(prompt: str, cfg: Config) -> LLMResult:
@@ -246,8 +394,21 @@ def call_llm(prompt: str, cfg: Config, usage_accum: Optional[TokenUsage] = None)
 # ────────────────────────── Document Library ──────────────────────────
 
 def load_document_pages(path: str) -> List[str]:
-    """Load pages from a processed dir (text.txt per page) or raw PDF."""
+    """Load pages from a processed dir, raw PDF, or raw text-like file."""
     p = Path(path)
+    text_like_suffixes = {
+        ".md",
+        ".markdown",
+        ".txt",
+        ".json",
+        ".csv",
+        ".tsv",
+        ".yaml",
+        ".yml",
+        ".xml",
+        ".html",
+        ".log",
+    }
     if p.is_dir():
         page_dirs = sorted(p.glob("page_*"), key=lambda x: int(x.name.split("_")[1]))
         pages = []
@@ -255,10 +416,32 @@ def load_document_pages(path: str) -> List[str]:
             txt = pd / "text.txt"
             pages.append(txt.read_text(encoding="utf-8") if txt.exists() else "")
         return pages
-    else:
-        from pypdf import PdfReader
-        reader = PdfReader(path)
-        return [(pg.extract_text() or "") for pg in reader.pages]
+    if p.suffix.lower() in text_like_suffixes:
+        text = p.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        chunks: List[str] = []
+        cur: List[str] = []
+        cur_chars = 0
+        max_chars = 3500
+        is_markdown = p.suffix.lower() in (".md", ".markdown")
+        for ln in lines:
+            is_heading = is_markdown and ln.lstrip().startswith("#")
+            ln_len = len(ln) + 1
+            # Split by heading for markdown; otherwise by size budget only.
+            if cur and (is_heading or (cur_chars + ln_len) > max_chars):
+                chunks.append("\n".join(cur).strip())
+                cur = []
+                cur_chars = 0
+            cur.append(ln)
+            cur_chars += ln_len
+        if cur:
+            chunks.append("\n".join(cur).strip())
+        return [c for c in chunks if c] or [text]
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(path)
+    return [(pg.extract_text() or "") for pg in reader.pages]
 
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -313,7 +496,9 @@ class RLMSandbox:
         # metadata the LLM can see
         self.docs: Dict[str, dict] = {}
         for doc_id, pages in self._pages.items():
-            self.docs[doc_id] = {"pages": len(pages), "path": doc_map[doc_id]}
+            p = Path(doc_map[doc_id])
+            source_name = p.name if p.is_file() else p.stem
+            self.docs[doc_id] = {"pages": len(pages), "path": doc_map[doc_id], "source_name": source_name}
 
         self.final_answer: Optional[str] = None
         self._iteration = 0
@@ -396,21 +581,21 @@ class RLMSandbox:
                 m = pat.search(text)
                 if not m:
                     continue
-                start = max(0, m.start() - 200)
-                end = min(len(text), m.end() + 200)
-                ctx = text[start:end].replace("\n", " ").strip()
+                start_idx = max(0, m.start() - 200)
+                end_idx = min(len(text), m.end() + 200)
+                ctx = text[start_idx:end_idx].replace("\n", " ").strip()
                 hits.append((doc_id, i + 1, ctx))
                 page_ref = (doc_id, i + 1)
                 if page_ref not in self._search_hit_pages_seen:
                     self._search_hit_pages_seen.add(page_ref)
                     self._search_hit_pages.append(page_ref)
                 if len(hits) >= max_hits:
-                    self.on_event("search", f'"{q}" → {len(hits)} hits across {len(set(h[0] for h in hits))} docs')
+                    self.on_event("search", f'"{q}" -> {len(hits)} hits across {len(set(h[0] for h in hits))} docs')
                     return hits
                 doc_hits += 1
                 if doc_hits >= max_per_doc:
                     break  # move to next document
-        self.on_event("search", f'"{q}" → {len(hits)} hits across {len(set(h[0] for h in hits))} docs')
+        self.on_event("search", f'"{q}" -> {len(hits)} hits across {len(set(h[0] for h in hits))} docs')
         return hits
 
     def llm_query(self, question: str, text: str) -> str:

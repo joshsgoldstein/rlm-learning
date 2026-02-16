@@ -19,6 +19,10 @@ APP_CSS = """
     border: solid $secondary;
     padding: 0 1;
 }
+#inspector-tabs {
+    height: 2fr;
+    min-height: 18;
+}
 #chat-log {
     height: 1fr;
 }
@@ -27,8 +31,13 @@ APP_CSS = """
 }
 #bottom-info {
     height: 1fr;
-    min-height: 18;
+    min-height: 12;
     padding-top: 1;
+}
+#context-view-panel {
+    height: 1fr;
+    min-height: 8;
+    margin-bottom: 1;
 }
 #token-panel {
     height: auto;
@@ -45,7 +54,7 @@ APP_CSS = """
 }
 #docs-label {
     height: auto;
-    max-height: 2;
+    max-height: 3;
     color: $text-muted;
     padding: 0 1;
 }

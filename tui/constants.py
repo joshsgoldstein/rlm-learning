@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from rlm_docs import resolve_processed_dir
+
 
 DATA_DIR = Path(os.getenv("RLM_DATA_DIR", "data"))
-PROCESSED_DIR = Path(os.getenv("RLM_PROCESSED_DIR", "processed_data"))
+PROCESSED_DIR = resolve_processed_dir(DATA_DIR)
 
 CONCEPT_NOTES = {
     "iteration": "🔄 [bold]RLM Loop[/] — Each iteration, the LLM writes code to explore the external environment. The context never enters the prompt directly. (Paper §3)",
@@ -22,6 +24,7 @@ INSPECTOR_SIZES = [0, 50, 70, 90, 110]
 SLASH_COMMANDS = [
     ("/help", "show commands"),
     ("/docs", "list all documents"),
+    ("/models", "list available models for current provider"),
     ("/test", "run query from RLM_TEST_QUERY in .env"),
     ("/config [N]", "show/set max iterations"),
     ("/traditional", "show last traditional stats"),
@@ -33,4 +36,4 @@ SLASH_COMMANDS = [
     ("/quit", "exit app"),
 ]
 
-INPUT_SUGGESTIONS = ["/help", "/docs", "/test", "/config", "/traditional", "/rag", "/eval", "/autoeval", "/copy", "/clear", "/quit", "/exit"]
+INPUT_SUGGESTIONS = ["/help", "/docs", "/models", "/test", "/config", "/traditional", "/rag", "/eval", "/autoeval", "/copy", "/clear", "/quit", "/exit"]

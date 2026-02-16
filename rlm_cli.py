@@ -10,13 +10,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from rlm_core import Config, ChatMessage, TokenUsage, answer_question
-from rlm_docs import discover_docs, list_pdf_files, missing_processed_pdfs, preprocess_pdfs
+from rlm_docs import (
+    discover_docs,
+    list_pdf_files,
+    missing_processed_pdfs,
+    preprocess_pdfs,
+    resolve_processed_dir,
+)
 
 
 # ────────────────────────── Settings ──────────────────────────
 
 DATA_DIR = Path(os.getenv("RLM_DATA_DIR", "data"))
-PROCESSED_DIR = Path(os.getenv("RLM_PROCESSED_DIR", "processed_data"))
+PROCESSED_DIR = resolve_processed_dir(DATA_DIR)
 
 HELP = """
 Commands:
@@ -132,7 +138,7 @@ def main() -> None:
 
     doc_map = discover_docs(DATA_DIR, PROCESSED_DIR)
     if not doc_map:
-        print(f"No documents found. Add PDFs to {DATA_DIR}/")
+        print(f"No supported documents found in {DATA_DIR}/")
         return
 
     print(f"RLM Chat (type /help). {len(doc_map)} docs ready.\n")

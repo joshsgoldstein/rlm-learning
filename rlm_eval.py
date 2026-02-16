@@ -14,7 +14,13 @@ from typing import Callable, List
 from dotenv import load_dotenv
 
 from rlm_core import Config, TokenUsage, answer_question, answer_traditional, call_llm, estimate_cost
-from rlm_docs import discover_docs, list_pdf_files, missing_processed_pdfs, preprocess_pdfs
+from rlm_docs import (
+    discover_docs,
+    list_pdf_files,
+    missing_processed_pdfs,
+    preprocess_pdfs,
+    resolve_processed_dir,
+)
 from rlm_event_stream import make_event_callback
 
 
@@ -22,7 +28,7 @@ load_dotenv()
 
 
 DATA_DIR = Path(os.getenv("RLM_DATA_DIR", "data"))
-PROCESSED_DIR = Path(os.getenv("RLM_PROCESSED_DIR", "processed_data"))
+PROCESSED_DIR = resolve_processed_dir(DATA_DIR)
 
 DEFAULT_QUESTIONS = [
     "How did Deloitte's position on enterprise AI evolve from 2025 to 2026?",
@@ -573,7 +579,7 @@ def run_eval(
 ) -> List[EvalRow]:
     doc_map = discover_docs(DATA_DIR, PROCESSED_DIR)
     if not doc_map:
-        raise RuntimeError(f"No documents found in {DATA_DIR}/ or {PROCESSED_DIR}/")
+        raise RuntimeError(f"No supported documents found in {DATA_DIR}/")
 
     emit(f"[eval] provider={cfg.llm_provider} model={cfg.llm_model}")
     emit(f"[eval] docs={len(doc_map)} questions={len(questions)}")

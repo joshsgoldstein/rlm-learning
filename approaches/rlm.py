@@ -12,7 +12,7 @@ from rlm_core import (
     CONVERSATIONAL_ROUTER_PROMPT_PATH,
     RLM_ITER_CONTINUE_PROMPT_PATH,
     RLM_ITER_INITIAL_PROMPT_PATH,
-    RLM_SYNTH_PROMPT_PATH,
+    PROMPTS_DIR,
     RLMSandbox,
     SYSTEM_PROMPT_PATH,
     IterationStats,
@@ -20,6 +20,7 @@ from rlm_core import (
     _render_prompt,
     call_llm,
 )
+FINAL_ANSWER_PROMPT_PATH = PROMPTS_DIR / "final_answer_common.txt"
 from .router import classify_route
 
 
@@ -111,14 +112,18 @@ def answer_question(
     doc_items = list(sandbox.docs.items())
     if doc_count > 30:
         sample = doc_items[:20]
-        sampled_summary = "\n".join(f"  - {did}: {info['pages']} pages" for did, info in sample)
+        sampled_summary = "\n".join(
+            f"  - {did} ({info.get('source_name', did)}): {info['pages']} pages" for did, info in sample
+        )
         doc_summary = (
             f"{doc_count} total documents available.\n"
             f"Sample of first {len(sample)} doc ids:\n{sampled_summary}\n"
-            "Use `docs.keys()` and `docs[doc_id]['pages']` in code to enumerate all documents."
+            "Use `docs.keys()` and `docs[doc_id]['pages']` / `docs[doc_id]['source_name']` in code to enumerate all documents."
         )
     else:
-        doc_summary = "\n".join(f"  - {did}: {info['pages']} pages" for did, info in doc_items)
+        doc_summary = "\n".join(
+            f"  - {did} ({info.get('source_name', did)}): {info['pages']} pages" for did, info in doc_items
+        )
 
     conversation: List[tuple[str, str]] = []
     code_history: List[str] = []
@@ -253,9 +258,11 @@ def answer_question(
         all_output = "\n".join(out for _, out in conversation if out.strip())
         if all_output.strip():
             synth_prompt = _render_prompt(
-                RLM_SYNTH_PROMPT_PATH,
+                FINAL_ANSWER_PROMPT_PATH,
+                CONTEXT_KIND="RLM fallback synthesis from gathered execution evidence",
                 QUESTION=question,
-                EVIDENCE=all_output[:6000],
+                CONTEXT=all_output[:6000],
+                CONTEXT_NOTES="This is fallback synthesis after iteration cap; use only evidence shown above.",
             )
             sandbox.final_answer = call_llm(synth_prompt, cfg, usage_accum=sandbox.usage)
             _on_event("answer", f"Synthesized answer from evidence ({len(sandbox.final_answer)} chars)")

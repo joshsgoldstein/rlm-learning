@@ -17,7 +17,7 @@ from rlm_core import (
 
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-TRADITIONAL_PROMPT_PATH = PROMPTS_DIR / "traditional_answer.txt"
+FINAL_ANSWER_PROMPT_PATH = PROMPTS_DIR / "final_answer_common.txt"
 
 
 def answer_traditional(
@@ -42,8 +42,9 @@ def answer_traditional(
             _on_event("traditional_stage", f"Loading document text: {idx}/{total_docs}")
         pages = load_document_pages(path)
         doc_page_counts[doc_id] = len(pages)
+        source_name = Path(path).name if Path(path).is_file() else Path(path).name
         full_text = "\n".join(pages)
-        all_docs.append(f"=== DOCUMENT: {doc_id} ===\n{full_text}")
+        all_docs.append(f"=== DOCUMENT: {doc_id} (source: {source_name}) ===\n{full_text}")
         total_chars += len(full_text)
 
     _on_event("traditional_stage", f"Loaded corpus: {total_chars:,} chars from {len(all_docs)} docs")
@@ -81,10 +82,14 @@ def answer_traditional(
     )
 
     prompt = _render_prompt(
-        TRADITIONAL_PROMPT_PATH,
-        DOCUMENTS=combined,
-        TRUNCATION_NOTE="(NOTE: Documents were truncated to fit in context window — information was lost.)" if truncated else "",
+        FINAL_ANSWER_PROMPT_PATH,
+        CONTEXT_KIND="Traditional baseline: full-corpus stuffing",
         QUESTION=question,
+        CONTEXT=combined,
+        CONTEXT_NOTES=(
+            "NOTE: Context was truncated to fit the model window; some documents were omitted."
+            if truncated else ""
+        ),
     )
 
     est_tokens = max(1, len(prompt) // 4)
