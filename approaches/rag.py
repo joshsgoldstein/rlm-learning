@@ -482,6 +482,7 @@ def answer_rag(
             iterations=1,
             iteration_stats=[IterationStats(iteration=1, action="rag_error")],
             code_history=[f"# RAG error: {type(e).__name__}: {e}"],
+            evidence_manifest={"type": "rag", "retrieved_chunks": [], "error": f"{type(e).__name__}: {e}"},
         )
         return (
             fallback,
@@ -501,6 +502,7 @@ def answer_rag(
             iterations=1,
             iteration_stats=[IterationStats(iteration=1, action="rag")],
             code_history=["# No chunks returned from Weaviate"],
+            evidence_manifest={"type": "rag", "retrieved_chunks": []},
         )
         return fallback, RagStats(total_docs=len(doc_map), retrieval_backend="weaviate", collection_name=rag_cfg.collection_name, retrieval_ms=retrieval_ms)
 
@@ -513,7 +515,7 @@ def answer_rag(
         page_end = c.get("page_end")
         page_label = f"p{page_start}" if page_start == page_end else f"p{page_start}-{page_end}"
         context_blocks.append(
-            f"[{i}] doc={doc_id} {page_label}\n{c.get('text', '')[:2400]}"
+            f"[{doc_id} {page_label}] (chunk {i})\n{c.get('text', '')[:2400]}"
         )
     rag_context = "\n\n".join(context_blocks)
 
@@ -546,6 +548,21 @@ def answer_rag(
             )
         ],
         code_history=[f"# Retrieved {len(chunks)} chunks from Weaviate collection {rag_cfg.collection_name}"],
+        evidence_manifest={
+            "type": "rag",
+            "retrieval_mode": rag_cfg.retrieval_mode,
+            "top_k": rag_cfg.top_k,
+            "retrieved_chunks": [
+                {
+                    "doc_id": c.get("doc_id", "unknown"),
+                    "page_start": c.get("page_start"),
+                    "page_end": c.get("page_end"),
+                    "distance": c.get("distance"),
+                }
+                for c in chunks
+            ],
+            "retrieved_doc_ids": sorted(cited_docs),
+        },
     )
 
     stats = RagStats(

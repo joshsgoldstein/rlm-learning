@@ -34,12 +34,14 @@ def answer_traditional(
 
     all_docs: List[str] = []
     doc_ids_ordered = list(doc_map.keys())
+    doc_page_counts: Dict[str, int] = {}
     total_chars = 0
     total_docs = max(1, len(doc_map))
     for idx, (doc_id, path) in enumerate(doc_map.items(), start=1):
         if idx == 1 or idx % 10 == 0 or idx == total_docs:
             _on_event("traditional_stage", f"Loading document text: {idx}/{total_docs}")
         pages = load_document_pages(path)
+        doc_page_counts[doc_id] = len(pages)
         full_text = "\n".join(pages)
         all_docs.append(f"=== DOCUMENT: {doc_id} ===\n{full_text}")
         total_chars += len(full_text)
@@ -115,4 +117,11 @@ def answer_traditional(
         ],
         code_history=[f"# Full corpus: {total_chars:,} chars across {len(doc_map)} docs" + (f" (TRUNCATED to {max_chars:,})" if truncated else "")],
         traditional_stats=trad_stats,
+        evidence_manifest={
+            "type": "traditional",
+            "docs_included": doc_ids_ordered[:docs_included],
+            "docs_excluded": docs_excluded,
+            "doc_page_counts": {doc_id: doc_page_counts.get(doc_id, 0) for doc_id in doc_ids_ordered[:docs_included]},
+            "truncated": truncated,
+        },
     )

@@ -28,11 +28,19 @@ SUPPORTED_APPROACHES = ("rlm", "traditional", "rag")
 
 def enabled_approaches_from_env(default: str = "rlm,traditional") -> List[str]:
     """Parse ENABLED_APPROACHES from env as ordered, deduplicated list."""
+    allowed = set(SUPPORTED_APPROACHES)
+    try:
+        from approaches import list_approaches
+
+        allowed = set(list_approaches())
+    except Exception:
+        # Fallback to built-ins if registry import isn't available yet.
+        pass
     raw = os.getenv("ENABLED_APPROACHES", default)
     items = [s.strip().lower() for s in raw.split(",") if s.strip()]
     out: List[str] = []
     for item in items:
-        if item in SUPPORTED_APPROACHES and item not in out:
+        if item in allowed and item not in out:
             out.append(item)
     return out or [s.strip() for s in default.split(",") if s.strip()]
 
@@ -311,6 +319,11 @@ class RLMSandbox:
         self._iteration = 0
         self._sub_call_count = 0
         self._sub_call_time_ms = 0.0
+        self._peeked_pages: List[Tuple[str, int]] = []
+        self._peeked_pages_seen: set[Tuple[str, int]] = set()
+        self._search_hit_pages: List[Tuple[str, int]] = []
+        self._search_hit_pages_seen: set[Tuple[str, int]] = set()
+        self._search_queries: List[str] = []
 
         # persistent REPL state — variables survive across exec() calls
         self._globals: Dict[str, object] = {
@@ -337,6 +350,10 @@ class RLMSandbox:
         text = pages[page - 1]
         if max_chars and len(text) > max_chars:
             text = text[:max_chars] + f"\n... (truncated, {len(pages[page-1])} total chars)"
+        page_ref = (doc_id, page)
+        if page_ref not in self._peeked_pages_seen:
+            self._peeked_pages_seen.add(page_ref)
+            self._peeked_pages.append(page_ref)
         self.on_event("peek", f"[{doc_id} p{page}] {len(text)} chars")
         return text
 
@@ -349,6 +366,7 @@ class RLMSandbox:
         q = query.strip()
         if not q:
             return []
+        self._search_queries.append(q)
 
         # Adaptive defaults for large corpora:
         # - fewer hits per doc to increase breadth
@@ -382,6 +400,10 @@ class RLMSandbox:
                 end = min(len(text), m.end() + 200)
                 ctx = text[start:end].replace("\n", " ").strip()
                 hits.append((doc_id, i + 1, ctx))
+                page_ref = (doc_id, i + 1)
+                if page_ref not in self._search_hit_pages_seen:
+                    self._search_hit_pages_seen.add(page_ref)
+                    self._search_hit_pages.append(page_ref)
                 if len(hits) >= max_hits:
                     self.on_event("search", f'"{q}" → {len(hits)} hits across {len(set(h[0] for h in hits))} docs')
                     return hits
@@ -410,6 +432,22 @@ class RLMSandbox:
         """Set the final answer. Call this when done."""
         self.final_answer = text
         self.on_event("answer", f"Final answer set ({len(text)} chars)")
+
+    def evidence_manifest(self) -> Dict[str, object]:
+        """Structured provenance for downstream judging and debugging."""
+        touched_docs = []
+        touched_seen = set()
+        for doc_id, _page in self._peeked_pages + self._search_hit_pages:
+            if doc_id not in touched_seen:
+                touched_seen.add(doc_id)
+                touched_docs.append(doc_id)
+        return {
+            "type": "rlm",
+            "docs_touched": touched_docs,
+            "peeked_pages": [{"doc_id": d, "page": p} for d, p in self._peeked_pages[:300]],
+            "search_hit_pages": [{"doc_id": d, "page": p} for d, p in self._search_hit_pages[:500]],
+            "search_queries": self._search_queries[:100],
+        }
 
     def execute_code(self, code: str) -> str:
         """Execute Python code in the persistent REPL sandbox.
@@ -510,6 +548,7 @@ class AnswerResult:
     iteration_stats: List[IterationStats] = field(default_factory=list)
     code_history: List[str] = field(default_factory=list)
     traditional_stats: Optional[TraditionalStats] = None
+    evidence_manifest: Dict[str, object] = field(default_factory=dict)
 
 
 def answer_traditional(

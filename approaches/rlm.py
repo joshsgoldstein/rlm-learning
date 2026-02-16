@@ -78,6 +78,7 @@ def answer_direct(
             )
         ],
         code_history=[],
+        evidence_manifest={"type": "direct_chat", "docs_touched": []},
     )
 
 
@@ -250,6 +251,7 @@ def answer_question(
                 iterations=iteration + 1,
                 iteration_stats=iteration_stats,
                 code_history=code_history,
+                evidence_manifest=sandbox.evidence_manifest(),
             )
 
     if sandbox.final_answer is None:
@@ -278,6 +280,7 @@ def answer_question(
         iterations=len(iteration_stats),
         iteration_stats=iteration_stats,
         code_history=code_history,
+        evidence_manifest=sandbox.evidence_manifest(),
     )
 
 

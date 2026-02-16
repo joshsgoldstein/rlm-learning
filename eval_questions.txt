@@ -12,4 +12,7 @@ How are human-in-the-loop controls positioned across high-risk vs low-risk workf
 What security and compliance requirements are emphasized for regulated industries adopting agents?
 Which use cases are described as overhyped versus high-confidence near-term wins, and why?
 What implementation roadmap is implied across the corpus for a company starting from zero today?
-How are organizations selcting their model output quality metrics and KPIs 
+How are organizations selcting their model output quality metrics and KPIs
+Where do Deloitte and KPMG disagree on governance readiness and what evidence does each give?
+Do these reports frame agents as automation or augmentation? Give one quote-like snippet per report and reconcile differences
+What is the implied human role in 2026 across all four reports? Provide supporting evidence locations

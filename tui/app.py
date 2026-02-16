@@ -25,17 +25,25 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.markdown import Markdown
 
-from rlm_core import Config, ChatMessage, TokenUsage, IterationStats, answer_question, answer_traditional, estimate_cost, enabled_approaches_from_env
+from rlm_core import Config, ChatMessage, TokenUsage, IterationStats, estimate_cost, enabled_approaches_from_env
 from rlm_docs import discover_docs, list_pdf_files, missing_processed_pdfs, preprocess_pdfs
 from rlm_eval import load_questions, run_eval, summarize
-from rlm_eval import extract_cited_docs, lexical_overlap, semantic_similarity_llm
+from rlm_eval import (
+    extract_cited_docs,
+    lexical_overlap,
+    semantic_similarity_llm,
+    format_evidence_manifest,
+    semantic_backend_from_env,
+    tfidf_cosine_similarity,
+    extract_evidence_docs,
+)
 from approaches.rag import (
-    answer_rag,
     ensure_rag_ready,
     get_rag_collection_status,
     reset_rag_collection,
     RagConfig,
 )
+from approaches import get_approach
 from .constants import (
     DATA_DIR,
     PROCESSED_DIR,
@@ -656,12 +664,14 @@ class RLMApp(App):
                 if event_type == "traditional_stage":
                     self.call_from_thread(inspector.write, Text(f"  • {detail}", style="dim"))
 
-            trad_result = answer_traditional(
+            trad_exec = get_approach("traditional").run(
                 doc_map=self.doc_map,
                 question=question,
+                history=self.history,
                 cfg=self.cfg,
                 on_event=on_traditional_event,
             )
+            trad_result = trad_exec.answer
             trad_t = trad_result.usage
             baseline_results.append(("Traditional", trad_result, "dim red"))
             baseline_for_eval = baseline_for_eval or trad_result
@@ -701,12 +711,15 @@ class RLMApp(App):
                     self.call_from_thread(inspector.write, Text(f"  • {detail}", style="dim"))
 
             try:
-                rag_result, rag_stats = answer_rag(
+                rag_exec = get_approach("rag").run(
                     doc_map=self.doc_map,
                     question=question,
+                    history=self.history,
                     cfg=self.cfg,
                     on_event=on_rag_event,
                 )
+                rag_result = rag_exec.answer
+                rag_stats = rag_exec.metadata.get("rag_stats")
             except Exception as e:
                 # Never let baseline failures kill the full run.
                 self.call_from_thread(inspector.write, Text(f"  ⚠️ RAG failed: {e}", style="bold red"))
@@ -731,8 +744,16 @@ class RLMApp(App):
                         style="dim magenta",
                     ),
                 )
-                if rag_stats is not None:
-                    self.call_from_thread(chat.write, Text(f"  (retrieved {rag_stats.retrieved_chunks} chunks from {rag_stats.unique_docs_retrieved} docs in {int(rag_stats.retrieval_ms)}ms)", style="dim"))
+                if isinstance(rag_stats, dict):
+                    self.call_from_thread(
+                        chat.write,
+                        Text(
+                            f"  (retrieved {int(rag_stats.get('retrieved_chunks', 0))} chunks from "
+                            f"{int(rag_stats.get('unique_docs_retrieved', 0))} docs in "
+                            f"{int(rag_stats.get('retrieval_ms', 0.0))}ms)",
+                            style="dim",
+                        ),
+                    )
                 self.call_from_thread(chat.write, Text(""))
 
         if "rlm" in enabled:
@@ -742,13 +763,14 @@ class RLMApp(App):
             self.call_from_thread(chat.write, Text(""))
             self.call_from_thread(inspector.write, Text("\n🚀 Starting RLM agent...", style="bold"))
 
-            result = answer_question(
+            rlm_exec = get_approach("rlm").run(
                 doc_map=self.doc_map,
                 question=question,
                 history=self.history,
                 cfg=self.cfg,
                 on_event=on_event_with_tokens,
             )
+            result = rlm_exec.answer
             self.session_usage += result.usage
             self.history.append(ChatMessage(role="assistant", content=result.answer))
             is_rlm_run = any(s.action != "direct" for s in result.iteration_stats)
@@ -827,28 +849,69 @@ class RLMApp(App):
         # 5. Optional post-turn eval (semantic + citation signal) right in chat
         if self.auto_eval_after_chat and is_rlm_run and baseline_for_eval is not None:
             self.call_from_thread(chat.write, Text("🧪 Post-turn eval:", style="bold yellow"))
-            self.call_from_thread(chat.write, Text(f"  Running semantic similarity judge ({baseline_name_for_eval} vs RLM)...", style="dim"))
+            sem_backend = semantic_backend_from_env()
+            self.call_from_thread(
+                chat.write,
+                Text(
+                    f"  Running semantic similarity ({sem_backend}) ({baseline_name_for_eval} vs RLM)...",
+                    style="dim",
+                ),
+            )
 
             baseline_cites = extract_cited_docs(baseline_for_eval.answer)
             rlm_cites = extract_cited_docs(result.answer)
+            baseline_ev_docs = extract_evidence_docs(baseline_for_eval.evidence_manifest)
+            rlm_ev_docs = extract_evidence_docs(result.evidence_manifest)
+            if not baseline_ev_docs and baseline_cites:
+                baseline_ev_docs = set(baseline_cites)
+            if not rlm_ev_docs and rlm_cites:
+                rlm_ev_docs = set(rlm_cites)
+            ev_overlap = baseline_ev_docs & rlm_ev_docs
+            ev_baseline_only = baseline_ev_docs - rlm_ev_docs
+            ev_rlm_only = rlm_ev_docs - baseline_ev_docs
+            ev_union_n = len(baseline_ev_docs | rlm_ev_docs)
+            ev_jaccard = (len(ev_overlap) / ev_union_n) if ev_union_n else 0.0
             lexical = lexical_overlap(baseline_for_eval.answer, result.answer)
+            tfidf_sim = tfidf_cosine_similarity(baseline_for_eval.answer, result.answer)
 
             try:
-                judge = semantic_similarity_llm(baseline_for_eval.answer, result.answer, self.cfg)
+                judge = semantic_similarity_llm(
+                    baseline_for_eval.answer,
+                    result.answer,
+                    self.cfg,
+                    reference_label=baseline_name_for_eval,
+                    candidate_label="RLM",
+                    reference_evidence=format_evidence_manifest(baseline_for_eval.evidence_manifest),
+                    candidate_evidence=format_evidence_manifest(result.evidence_manifest),
+                )
                 sem_cost = estimate_cost(judge.usage, self.cfg.llm_model)
-                self.call_from_thread(chat.write, Text(f"  • Semantic similarity: {judge.semantic_score:.2f}  (judge {judge.usage.total_tokens:,} tok, ${sem_cost:.4f})", style="yellow"))
-                self.call_from_thread(chat.write, Text(f"  • Topic overlap: {judge.topic_overlap_score:.2f}", style="yellow"))
-                self.call_from_thread(chat.write, Text(f"  • Factuality/groundedness: {judge.factuality_groundedness_score:.2f}", style="yellow"))
-                self.call_from_thread(chat.write, Text(f"  • Evidence sufficiency: {judge.evidence_sufficiency_score:.2f}", style="yellow"))
-                self.call_from_thread(chat.write, Text(f"  • Hallucination risk: {judge.hallucination_risk_flag}", style="yellow"))
-                self.call_from_thread(chat.write, Text(f"  • Judge winner/confidence: {judge.winner}/{judge.confidence:.2f}", style="yellow"))
+                backend_label = "LLM judge" if judge.backend == "llm" else "vector cosine"
+                self.call_from_thread(chat.write, Text(f"  • Semantic similarity ({backend_label}): {judge.semantic_score:.2f}  (judge {judge.usage.total_tokens:,} tok, ${sem_cost:.4f})", style="yellow"))
+                if judge.backend == "llm":
+                    self.call_from_thread(chat.write, Text(f"  • Topic overlap: {judge.topic_overlap_score:.2f}", style="yellow"))
+                    self.call_from_thread(chat.write, Text(f"  • Factuality/groundedness: {judge.factuality_groundedness_score:.2f}", style="yellow"))
+                    self.call_from_thread(chat.write, Text(f"  • Evidence sufficiency: {judge.evidence_sufficiency_score:.2f}", style="yellow"))
+                    self.call_from_thread(chat.write, Text(f"  • Hallucination risk: {judge.hallucination_risk_flag}", style="yellow"))
+                    self.call_from_thread(chat.write, Text(f"  • Judge winner/confidence: {judge.winner}/{judge.confidence:.2f}", style="yellow"))
                 self.call_from_thread(chat.write, Text(f"  • Semantic note: {judge.semantic_reason}", style="dim"))
-                self.call_from_thread(chat.write, Text(f"  • Topic note: {judge.topic_reason}", style="dim"))
+                if judge.backend == "llm":
+                    self.call_from_thread(chat.write, Text(f"  • Topic note: {judge.topic_reason}", style="dim"))
             except Exception as e:
                 self.call_from_thread(chat.write, Text(f"  • Semantic judge failed: {e}", style="dim red"))
 
             self.call_from_thread(chat.write, Text(f"  • Lexical overlap: {lexical:.2f}", style="dim"))
+            self.call_from_thread(chat.write, Text(f"  • TF-IDF cosine similarity: {tfidf_sim:.2f}", style="dim"))
             self.call_from_thread(chat.write, Text(f"  • Cited docs ({baseline_name_for_eval}/RLM): {len(baseline_cites)}/{len(rlm_cites)}", style="dim"))
+            self.call_from_thread(
+                chat.write,
+                Text(
+                    "  • Evidence docs overlap "
+                    f"({baseline_name_for_eval}/RLM/overlap/{baseline_name_for_eval}-only/RLM-only): "
+                    f"{len(baseline_ev_docs)}/{len(rlm_ev_docs)}/{len(ev_overlap)}/{len(ev_baseline_only)}/{len(ev_rlm_only)}",
+                    style="dim",
+                ),
+            )
+            self.call_from_thread(chat.write, Text(f"  • Evidence docs jaccard: {ev_jaccard:.2f}", style="dim"))
             self.call_from_thread(chat.write, Text(""))
 
     @work(thread=True)

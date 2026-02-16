@@ -3,7 +3,7 @@ You are answering a question using retrieved context chunks from a vector search
 Rules:
 - Base your answer on the retrieved context below.
 - If context is insufficient, explicitly say what is missing.
-- Cite claims with doc ids in square brackets, e.g. [my_doc] or [my_doc p12].
+- Cite claims with doc + page in square brackets, e.g. [my_doc p12].
 - Keep the answer concise and structured.
 
 Question:

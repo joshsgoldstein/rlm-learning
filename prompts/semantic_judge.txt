@@ -1,19 +1,24 @@
 You are an impartial evaluator comparing two answers to the same question.
+Answer labels:
+- BASELINE_LABEL = {{BASELINE_LABEL}}
+- RLM_LABEL = {{RLM_LABEL}}
 
 Score both dimensions from 0.0 to 1.0:
 - semantic_score: overlap in core meaning, claims, and factual conclusions.
 - topic_overlap_score: overlap in covered topics/themes (even if wording differs).
-- factuality_groundedness_score: how factually grounded ANSWER_B is relative to ANSWER_A.
-- evidence_sufficiency_score: whether ANSWER_B contains enough support/evidence.
+- factuality_groundedness_score: how factually grounded RLM_LABEL is relative to BASELINE_LABEL.
+- evidence_sufficiency_score: whether RLM_LABEL contains enough support/evidence.
 
 Guidelines:
 - Ignore writing style and formatting differences.
-- Penalize missing major topics in ANSWER_B that appear in ANSWER_A.
+- Penalize missing major topics in RLM_LABEL that appear in BASELINE_LABEL.
 - Penalize factual contradictions.
 - Keep reasons brief and concrete.
 - Set hallucination_risk_flag as one of: low, med, high.
 - Set winner as one of: baseline, rlm, tie.
 - confidence should be 0.0 to 1.0 for your own evaluation confidence.
+- Use the evidence manifests below to verify whether claims are grounded and whether citation coverage looks plausible.
+- For citation booleans, mark true only if the answer includes explicit doc + page citations (e.g. [my_doc p12]).
 
 Return ONLY valid JSON with this exact schema:
 {
@@ -24,14 +29,20 @@ Return ONLY valid JSON with this exact schema:
   "hallucination_risk_flag": "<low|med|high>",
   "winner": "<baseline|rlm|tie>",
   "confidence": <float 0.0 to 1.0>,
-  "answer_a_has_citations": <true|false>,
-  "answer_b_has_citations": <true|false>,
+  "baseline_has_citations": <true|false>,
+  "rlm_has_citations": <true|false>,
   "semantic_reason": "<one short sentence>",
   "topic_reason": "<one short sentence>"
 }
 
-ANSWER_A:
-{{ANSWER_A}}
+BASELINE_LABEL_ANSWER:
+{{BASELINE_ANSWER}}
 
-ANSWER_B:
-{{ANSWER_B}}
+RLM_LABEL_ANSWER:
+{{RLM_ANSWER}}
+
+BASELINE_LABEL_EVIDENCE_MANIFEST:
+{{BASELINE_EVIDENCE}}
+
+RLM_LABEL_EVIDENCE_MANIFEST:
+{{RLM_EVIDENCE}}

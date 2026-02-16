@@ -5,4 +5,5 @@ QUESTION: {{QUESTION}}
 EVIDENCE:
 {{EVIDENCE}}
 
-Provide a concise answer (3-8 sentences) citing sources where possible. If the evidence is insufficient, say what you found and what's missing.
+Provide a concise answer (3-8 sentences) and cite every factual claim as [doc_id p#].
+If evidence is insufficient or page numbers are missing, say what you found and what is missing.

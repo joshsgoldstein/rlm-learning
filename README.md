@@ -36,7 +36,7 @@ On first run, PDFs are automatically extracted to `processed_data/` (text per pa
 
 ## Evaluation Harness
 
-Run a repeatable benchmark to compare RLM vs traditional across fixed questions:
+Run a repeatable benchmark to compare RLM vs a baseline approach across fixed questions:
 
 ```bash
 uv run python rlm_eval.py --questions-file eval_questions.txt --min-cited-docs 8
@@ -51,12 +51,12 @@ uv run python rlm_eval.py --questions-file eval_questions.txt --min-cited-docs 8
 What it reports per question:
 - traditional tokens/cost + truncation stats
 - RLM tokens/cost
-- token savings percentage (RLM vs traditional)
+- token savings percentage (RLM vs baseline)
 - cited-document count (RLM and traditional)
 - answer overlap ratio (surface similarity)
-- semantic similarity (LLM judge)
+- semantic similarity (configurable: LLM judge or vector cosine)
 - topic overlap score (LLM judge)
-- citation booleans from judge (`answer_a_has_citations`, `answer_b_has_citations`)
+- citation booleans from judge (`baseline_has_citations`, `rlm_has_citations`)
 
 LLM judge prompt is editable at:
 - `prompts/semantic_judge.txt`
@@ -67,6 +67,13 @@ Optional judge-model overrides (separate from main answer model):
 - `JUDGE_LLM_BASE_URL`
 - `JUDGE_LLM_API_KEY`
 - `JUDGE_LLM_TEMPERATURE`
+
+Semantic similarity backend config:
+- `SEMANTIC_SIMILARITY_BACKEND` = `llm` or `vector`
+- `SEMANTIC_EMBED_PROVIDER` = `openai` or `ollama` (for `vector`)
+- `SEMANTIC_EMBED_MODEL` (for `vector`, e.g. `text-embedding-3-small`)
+- `SEMANTIC_EMBED_BASE_URL`
+- `SEMANTIC_EMBED_API_KEY`
 
 To disable semantic judging:
 
@@ -143,7 +150,7 @@ Keyboard shortcuts:
 | `ctrl+[` | Inspector narrower |
 | `ctrl+h` | Toggle inspector on/off |
 | `ctrl+l` | Clear chat |
-| `ctrl+c` | Quit |
+| `ctrl+c` | Clear input first; press again quickly to quit |
 
 ## Project Structure
 
@@ -153,7 +160,10 @@ Keyboard shortcuts:
 | `approaches/rlm.py` | RLM approach implementation (router + recursive loop) |
 | `approaches/traditional.py` | Traditional baseline implementation |
 | `approaches/rag.py` | RAG baseline implementation (Weaviate retrieval + synthesis) |
-| `rlm_tui.py` | Terminal UI with chat + inspector panels, live visualization, paper annotations |
+| `rlm_tui.py` | TUI launcher entrypoint |
+| `tui/app.py` | Main TUI app logic (chat, inspector, commands, workers) |
+| `tui/constants.py` | TUI constants and slash-command/help text |
+| `tui/styles.py` | TUI CSS/styling |
 | `rlm_cli.py` | Plain CLI (no panels, just text output) |
 | `rlm_trace.py` | Tree-structured tracing (`TraceTree`) |
 | `prompts/rlm_system.txt` | System prompt telling the LLM how to use the sandbox |
@@ -193,6 +203,11 @@ All via environment variables or `.env`:
 | `RAG_AUTO_BOOTSTRAP` | `true` | If collection is missing/empty, auto-create and ingest from `processed_data` on first RAG run |
 | `RAG_INGEST_MAX_CHARS` | `1800` | Max characters per ingested chunk |
 | `RAG_INGEST_BATCH_SIZE` | `64` | Embedding batch size during bootstrap ingestion |
+| `SEMANTIC_SIMILARITY_BACKEND` | `vector` | Semantic metric backend for eval/autoeval: `llm` or `vector` |
+| `SEMANTIC_EMBED_PROVIDER` | `openai` | Embedding provider for vector backend: `openai` or `ollama` |
+| `SEMANTIC_EMBED_MODEL` | `text-embedding-3-small` | Embedding model used by vector semantic similarity |
+| `SEMANTIC_EMBED_BASE_URL` | *(provider default)* | Base URL for vector embedding provider |
+| `SEMANTIC_EMBED_API_KEY` | — | Optional override API key for vector embedding provider |
 
 ## Why RLM > Traditional
 
