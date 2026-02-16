@@ -649,6 +649,8 @@ class RLMApp(App):
         trad_result = None
         baseline_for_eval = None
         baseline_name_for_eval = "baseline"
+        candidate_for_eval = None
+        candidate_name_for_eval = "candidate"
         baseline_results = []
 
         if "traditional" in enabled:
@@ -776,7 +778,7 @@ class RLMApp(App):
             is_rlm_run = any(s.action != "direct" for s in result.iteration_stats)
         else:
             if baseline_results:
-                result = baseline_results[0][1]
+                result = baseline_results[-1][1]
                 self.session_usage += result.usage
                 self.history.append(ChatMessage(role="assistant", content=result.answer))
             is_rlm_run = False
@@ -824,22 +826,37 @@ class RLMApp(App):
             self.call_from_thread(chat.write, table)
             self.call_from_thread(chat.write, Text(""))
 
-        # 4. Comparison box with dollar costs
-        if is_rlm_run and baseline_results:
-            t = result.usage
-            rlm_cost = estimate_cost(t, self.cfg.llm_model)
+        # 4. Comparison and post-turn eval pair selection
+        if is_rlm_run and result is not None and baseline_results:
+            baseline_for_eval = baseline_results[0][1]
+            baseline_name_for_eval = baseline_results[0][0]
+            candidate_for_eval = result
+            candidate_name_for_eval = "RLM"
+        elif len(baseline_results) >= 2:
+            baseline_for_eval = baseline_results[0][1]
+            baseline_name_for_eval = baseline_results[0][0]
+            candidate_for_eval = baseline_results[1][1]
+            candidate_name_for_eval = baseline_results[1][0]
 
-            self.call_from_thread(chat.write, Text("  ┌─ 💡 Comparison (Paper §4) ───────────────────────────────────────", style="dim"))
+        # 4b. Comparison box with dollar costs
+        if baseline_for_eval is not None and candidate_for_eval is not None:
+            cand_t = candidate_for_eval.usage
+            cand_cost = estimate_cost(cand_t, self.cfg.llm_model)
+            ref_name = baseline_name_for_eval
+            ref_res = baseline_for_eval
+            ref_cost = estimate_cost(ref_res.usage, self.cfg.llm_model)
+
+            self.call_from_thread(chat.write, Text("  ┌─ 💡 Comparison ────────────────────────────────────────────────", style="dim"))
             for name, bres, style in baseline_results:
                 btok = bres.usage.total_tokens
                 bcost = estimate_cost(bres.usage, self.cfg.llm_model)
                 self.call_from_thread(chat.write, Text(f"  │ {name:<12}: {btok:>8,} tokens  ${bcost:.4f}", style=style))
-            self.call_from_thread(chat.write, Text(f"  │ 🚀 RLM         : {t.total_tokens:>8,} tokens  ${rlm_cost:.4f}", style="green"))
-            ref_name, ref_res, _ = baseline_results[0]
-            savings_pct = max(0, 100 - int(t.total_tokens / max(1, ref_res.usage.total_tokens) * 100))
+            icon = "🚀" if candidate_name_for_eval == "RLM" else "✅"
+            self.call_from_thread(chat.write, Text(f"  │ {icon} {candidate_name_for_eval:<10}: {cand_t.total_tokens:>8,} tokens  ${cand_cost:.4f}", style="green"))
+            savings_pct = max(0, 100 - int(cand_t.total_tokens / max(1, ref_res.usage.total_tokens) * 100))
             if savings_pct > 0:
-                saved = estimate_cost(ref_res.usage, self.cfg.llm_model) - rlm_cost
-                self.call_from_thread(chat.write, Text(f"  │ 💰 RLM vs {ref_name}: {savings_pct}% fewer tokens, saved ${saved:.4f}", style="bold green"))
+                saved = ref_cost - cand_cost
+                self.call_from_thread(chat.write, Text(f"  │ 💰 {candidate_name_for_eval} vs {ref_name}: {savings_pct}% fewer tokens, saved ${saved:.4f}", style="bold green"))
             else:
                 self.call_from_thread(chat.write, Text(f"  │ 💡 At {len(self.doc_map)} docs, costs can be similar by question type.", style="yellow"))
             self.call_from_thread(chat.write, Text("  └────────────────────────────────────────────────────────────────", style="dim"))
@@ -847,42 +864,42 @@ class RLMApp(App):
             self.call_from_thread(inspector.write, Text("✅ Comparison complete", style="dim"))
 
         # 5. Optional post-turn eval (semantic + citation signal) right in chat
-        if self.auto_eval_after_chat and is_rlm_run and baseline_for_eval is not None:
+        if self.auto_eval_after_chat and baseline_for_eval is not None and candidate_for_eval is not None:
             self.call_from_thread(chat.write, Text("🧪 Post-turn eval:", style="bold yellow"))
             sem_backend = semantic_backend_from_env()
             self.call_from_thread(
                 chat.write,
                 Text(
-                    f"  Running semantic similarity ({sem_backend}) ({baseline_name_for_eval} vs RLM)...",
+                    f"  Running semantic similarity ({sem_backend}) ({baseline_name_for_eval} vs {candidate_name_for_eval})...",
                     style="dim",
                 ),
             )
 
             baseline_cites = extract_cited_docs(baseline_for_eval.answer)
-            rlm_cites = extract_cited_docs(result.answer)
+            candidate_cites = extract_cited_docs(candidate_for_eval.answer)
             baseline_ev_docs = extract_evidence_docs(baseline_for_eval.evidence_manifest)
-            rlm_ev_docs = extract_evidence_docs(result.evidence_manifest)
+            candidate_ev_docs = extract_evidence_docs(candidate_for_eval.evidence_manifest)
             if not baseline_ev_docs and baseline_cites:
                 baseline_ev_docs = set(baseline_cites)
-            if not rlm_ev_docs and rlm_cites:
-                rlm_ev_docs = set(rlm_cites)
-            ev_overlap = baseline_ev_docs & rlm_ev_docs
-            ev_baseline_only = baseline_ev_docs - rlm_ev_docs
-            ev_rlm_only = rlm_ev_docs - baseline_ev_docs
-            ev_union_n = len(baseline_ev_docs | rlm_ev_docs)
+            if not candidate_ev_docs and candidate_cites:
+                candidate_ev_docs = set(candidate_cites)
+            ev_overlap = baseline_ev_docs & candidate_ev_docs
+            ev_baseline_only = baseline_ev_docs - candidate_ev_docs
+            ev_candidate_only = candidate_ev_docs - baseline_ev_docs
+            ev_union_n = len(baseline_ev_docs | candidate_ev_docs)
             ev_jaccard = (len(ev_overlap) / ev_union_n) if ev_union_n else 0.0
-            lexical = lexical_overlap(baseline_for_eval.answer, result.answer)
-            tfidf_sim = tfidf_cosine_similarity(baseline_for_eval.answer, result.answer)
+            lexical = lexical_overlap(baseline_for_eval.answer, candidate_for_eval.answer)
+            tfidf_sim = tfidf_cosine_similarity(baseline_for_eval.answer, candidate_for_eval.answer)
 
             try:
                 judge = semantic_similarity_llm(
                     baseline_for_eval.answer,
-                    result.answer,
+                    candidate_for_eval.answer,
                     self.cfg,
                     reference_label=baseline_name_for_eval,
-                    candidate_label="RLM",
+                    candidate_label=candidate_name_for_eval,
                     reference_evidence=format_evidence_manifest(baseline_for_eval.evidence_manifest),
-                    candidate_evidence=format_evidence_manifest(result.evidence_manifest),
+                    candidate_evidence=format_evidence_manifest(candidate_for_eval.evidence_manifest),
                 )
                 sem_cost = estimate_cost(judge.usage, self.cfg.llm_model)
                 backend_label = "LLM judge" if judge.backend == "llm" else "vector cosine"
@@ -901,13 +918,13 @@ class RLMApp(App):
 
             self.call_from_thread(chat.write, Text(f"  • Lexical overlap: {lexical:.2f}", style="dim"))
             self.call_from_thread(chat.write, Text(f"  • TF-IDF cosine similarity: {tfidf_sim:.2f}", style="dim"))
-            self.call_from_thread(chat.write, Text(f"  • Cited docs ({baseline_name_for_eval}/RLM): {len(baseline_cites)}/{len(rlm_cites)}", style="dim"))
+            self.call_from_thread(chat.write, Text(f"  • Cited docs ({baseline_name_for_eval}/{candidate_name_for_eval}): {len(baseline_cites)}/{len(candidate_cites)}", style="dim"))
             self.call_from_thread(
                 chat.write,
                 Text(
                     "  • Evidence docs overlap "
-                    f"({baseline_name_for_eval}/RLM/overlap/{baseline_name_for_eval}-only/RLM-only): "
-                    f"{len(baseline_ev_docs)}/{len(rlm_ev_docs)}/{len(ev_overlap)}/{len(ev_baseline_only)}/{len(ev_rlm_only)}",
+                    f"({baseline_name_for_eval}/{candidate_name_for_eval}/overlap/{baseline_name_for_eval}-only/{candidate_name_for_eval}-only): "
+                    f"{len(baseline_ev_docs)}/{len(candidate_ev_docs)}/{len(ev_overlap)}/{len(ev_baseline_only)}/{len(ev_candidate_only)}",
                     style="dim",
                 ),
             )

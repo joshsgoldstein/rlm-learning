@@ -160,6 +160,7 @@ Keyboard shortcuts:
 | `approaches/rlm.py` | RLM approach implementation (router + recursive loop) |
 | `approaches/traditional.py` | Traditional baseline implementation |
 | `approaches/rag.py` | RAG baseline implementation (Weaviate retrieval + synthesis) |
+| `approaches/base.py` | `BaseApproach` ABC + registry helpers (`register_approach`, `get_approach`) |
 | `rlm_tui.py` | TUI launcher entrypoint |
 | `tui/app.py` | Main TUI app logic (chat, inspector, commands, workers) |
 | `tui/constants.py` | TUI constants and slash-command/help text |
@@ -208,6 +209,17 @@ All via environment variables or `.env`:
 | `SEMANTIC_EMBED_MODEL` | `text-embedding-3-small` | Embedding model used by vector semantic similarity |
 | `SEMANTIC_EMBED_BASE_URL` | *(provider default)* | Base URL for vector embedding provider |
 | `SEMANTIC_EMBED_API_KEY` | — | Optional override API key for vector embedding provider |
+
+## Extending Approaches
+
+Approaches are registered via a small registry/ABC layer:
+
+- Subclass `BaseApproach` in `approaches/base.py`
+- Implement `run(...) -> ApproachRun` (which wraps an `AnswerResult`)
+- Register with `register_approach(your_approach)`
+- Add your id to `ENABLED_APPROACHES`
+
+This allows custom combinations like `traditional,rag` (or your own approach ids) without hardcoding model logic per comparison pair.
 
 ## Why RLM > Traditional
 
